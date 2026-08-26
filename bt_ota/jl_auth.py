@@ -22,6 +22,25 @@ import os
 import struct
 import sys
 
+
+def _prefer_bundled_unicorn() -> None:
+    """PyInstaller-frozen Windows builds: force unicorn to load ITS OWN bundled
+    native DLL via LIBUNICORN_PATH (unicorn's first-choice loader hook). Without
+    this, unicorn's loader can fall through to a mismatched *system* libunicorn —
+    e.g. an old 1.0.2 shipped by another tool (speakeasy) — and then a 2.1.x
+    Python layer calling 1.0.2's uc_mem_map access-violates. No-op unless frozen
+    on Windows and not already overridden."""
+    mei = getattr(sys, "_MEIPASS", None)
+    if not mei or sys.platform not in ("win32", "cygwin") or os.environ.get("LIBUNICORN_PATH"):
+        return
+    import glob
+    hits = glob.glob(os.path.join(mei, "**", "unicorn.dll"), recursive=True)
+    if hits:
+        os.environ["LIBUNICORN_PATH"] = os.path.dirname(hits[0])
+
+
+_prefer_bundled_unicorn()
+
 try:
     from unicorn import Uc, UC_ARCH_ARM64, UC_MODE_ARM, UC_HOOK_CODE, UcError
     from unicorn.arm64_const import (

@@ -535,6 +535,9 @@ def _install_diagnostics():
                 format="%(asctime)s %(name)s %(levelname)s %(message)s",
                 filename=os.path.join(logdir, "debug.log"), filemode="w",
             )
+            logging.getLogger("bt_ota").info(
+                "frozen=%s LIBUNICORN_PATH=%s",
+                bool(getattr(sys, "_MEIPASS", None)), os.environ.get("LIBUNICORN_PATH"))
         except Exception:
             pass
 
