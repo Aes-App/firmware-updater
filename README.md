@@ -102,7 +102,8 @@ emulated x64/x86 Python otherwise mis-reports `platform.machine()`.
 
 ## License & attribution
 
-© AesApp Inc. — <https://aes.app/>
+**BSD 3-Clause License** — © 2026 AesApp Inc. See [`LICENSE`](LICENSE).
+Website: <https://aes.app/>
 
 Third-party components and trademarks are credited in
 [`bt_ota/THIRD_PARTY_NOTICES.txt`](bt_ota/THIRD_PARTY_NOTICES.txt) (JieLi
