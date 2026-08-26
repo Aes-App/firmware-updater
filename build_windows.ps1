@@ -24,9 +24,10 @@ $py = Join-Path $venv "Scripts\python.exe"
 Write-Host "== Installing build deps ==" -ForegroundColor Cyan
 & $py -m pip install --upgrade pip
 # unicorn 2.1.4's win_amd64 native lib access-violates in uc_mem_map (crashes the
-# D890 JieLi auth on Windows); 2.0.1.post1 is the stable Windows build. macOS keeps
-# 2.1.4 (this script is Windows-only; the .app spec is unaffected).
-& $py -m pip install bleak "unicorn==2.0.1.post1" pyinstaller pillow
+# D890 JieLi auth on Windows) -- a 2.1.4-only regression. 2.1.3 is the last good
+# build (verified on x64: emulator constructs + auth runs; no pkg_resources dep).
+# macOS keeps 2.1.4 (this script is Windows-only; the .app spec is unaffected).
+& $py -m pip install bleak "unicorn==2.1.3" pyinstaller pillow
 
 Write-Host "== Sanity: imports + emulated auth ==" -ForegroundColor Cyan
 $env:JL_OTA_AUTH_SO = (Resolve-Path "bt_ota\libjl_ota_auth.so")
