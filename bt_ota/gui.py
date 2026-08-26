@@ -9,10 +9,12 @@ Run from source:  python -m bt_ota gui
 from __future__ import annotations
 
 import asyncio
+import faulthandler
 import os
 import queue
 import sys
 import threading
+import traceback
 import tkinter as tk
 import webbrowser
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
@@ -265,6 +267,8 @@ class App:
         self._busy = False
 
         self._build_ui()
+        if os.environ.get("BT_OTA_DEBUG"):
+            self._append_log(f"{LOG_PREFIX} debug logging on — logs at {_config_dir()}")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(80, self._drain)
 
@@ -366,6 +370,9 @@ class App:
 
     def _log_cb(self, msg):
         self._post("log", f"{LOG_PREFIX} {msg}")
+        if os.environ.get("BT_OTA_DEBUG"):
+            import logging
+            logging.getLogger("bt_ota").debug(msg)
 
     def _progress_cb(self, sent, total):
         self._post("progress", (sent, total))
@@ -479,7 +486,7 @@ class App:
             await client.upgrade(fw, progress_cb=self._progress_cb)
             self._post("done")
         except Exception as e:  # noqa: BLE001 - OtaError / WicedOtaError / BLE
-            self._post("log", f"{LOG_PREFIX} ERROR: {e}")
+            self._post("log", f"{LOG_PREFIX} ERROR: {e}\n{traceback.format_exc()}")
             self._post("error", str(e))
         finally:
             try:
@@ -511,9 +518,31 @@ def _diag() -> int:
     return 0
 
 
+def _install_diagnostics():
+    """Always write native-crash stacks to crash.log; with BT_OTA_DEBUG=1 also write
+    full bleak/WinRT + app debug to debug.log. Both go to the config dir and work in
+    a windowed build (no console/redirection needed)."""
+    logdir = _config_dir()
+    try:
+        faulthandler.enable(open(os.path.join(logdir, "crash.log"), "a", buffering=1))
+    except Exception:
+        pass
+    if os.environ.get("BT_OTA_DEBUG"):
+        import logging
+        try:
+            logging.basicConfig(
+                level=logging.DEBUG,
+                format="%(asctime)s %(name)s %(levelname)s %(message)s",
+                filename=os.path.join(logdir, "debug.log"), filemode="w",
+            )
+        except Exception:
+            pass
+
+
 def main():
     if os.environ.get("BT_OTA_DIAG"):
         raise SystemExit(_diag())
+    _install_diagnostics()
     root = tk.Tk()
     root.title(APP_TITLE)
     try:
