@@ -105,7 +105,9 @@ def _mark_accepted() -> None:
 
 
 def _link_label(parent, text=WEBSITE, url=WEBSITE):
-    lbl = ttk.Label(parent, text=text, foreground="#0b5fff", cursor="pointinghand")
+    # "pointinghand" is a macOS-only Tk cursor; "hand2" is the portable X11 name.
+    hand = "pointinghand" if sys.platform == "darwin" else "hand2"
+    lbl = ttk.Label(parent, text=text, foreground="#0b5fff", cursor=hand)
     f = tkfont.Font(font=lbl.cget("font"))
     f.configure(underline=True)
     lbl.configure(font=f)
@@ -496,12 +498,16 @@ class App:
 def _diag() -> int:
     """Frozen-bundle import self-test: no window, no BLE permission needed."""
     import bleak  # noqa: F401
-    import bleak.backends.corebluetooth.scanner  # noqa: F401
-    import bleak.backends.corebluetooth.client   # noqa: F401
+    if sys.platform == "darwin":
+        import bleak.backends.corebluetooth.scanner  # noqa: F401
+        import bleak.backends.corebluetooth.client   # noqa: F401
+    elif sys.platform == "win32":
+        import bleak.backends.winrt.scanner  # noqa: F401
+        import bleak.backends.winrt.client   # noqa: F401
     from .jl_auth import AuthEmulator
     emu = AuthEmulator()
     out = emu.get_encrypted_auth_data(bytes([0] + list(range(1, 17))))
-    print(f"DIAG OK: bleak+corebluetooth+unicorn+so load fine; auth sample={out.hex()}")
+    print(f"DIAG OK: bleak+backend+unicorn+so load fine; auth sample={out.hex()}")
     return 0
 
 
