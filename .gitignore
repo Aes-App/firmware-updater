@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtualenvs
+.venv/
+.venv-win/
+venv/
+
+# PyInstaller / build output
+build/
+dist/
+dist-win-*/
+*.spec.bak
+bt_ota/assets/AesApp.iconset/
+
+# Native JieLi auth library — extracted from AnyTone's OTA APK for interop only,
+# not redistributed. Recreate it with:
+#   python -m bt_ota.extract_auth_lib "OTA V1.7.2.apk"
+bt_ota/libjl_ota_auth.so
+
+# Windows cross-build scaffolding (Parallels VM helpers, logs, retrieved exes)
+_win_*
+/mac-build-scratch/
+
+# macOS
+.DS_Store
+
+# Notarization / signing scratch
+*.zip
+!/**/vendor/**/*.zip

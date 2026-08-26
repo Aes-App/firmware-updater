@@ -1,0 +1,2 @@
+bleak>=0.21      # cross-platform BLE (macOS CoreBluetooth / Linux BlueZ / Windows)
+unicorn>=2.0     # runs the real JieLi auth crypto from libjl_ota_auth.so
