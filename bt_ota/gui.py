@@ -109,10 +109,11 @@ def _mark_accepted() -> None:
 def _link_label(parent, text=WEBSITE, url=WEBSITE):
     # "pointinghand" is a macOS-only Tk cursor; "hand2" is the portable X11 name.
     hand = "pointinghand" if sys.platform == "darwin" else "hand2"
-    lbl = ttk.Label(parent, text=text, foreground="#0b5fff", cursor=hand)
-    f = tkfont.Font(font=lbl.cget("font"))
+    # Match the surrounding small UI font. ttk.Label.cget("font") is empty (ttk uses
+    # styles), so deriving from it fell back to an oversized generic font.
+    f = tkfont.Font(font=tkfont.nametofont("TkDefaultFont"))
     f.configure(underline=True)
-    lbl.configure(font=f)
+    lbl = ttk.Label(parent, text=text, foreground="#0b5fff", cursor=hand, font=f)
     lbl.bind("<Button-1>", lambda _e: webbrowser.open(url))
     return lbl
 
@@ -354,7 +355,8 @@ class App:
             self.progress["value"] = 100.0
             self.status_var.set("Done — the module is rebooting to apply the new firmware.")
             messagebox.showinfo("Success", "Bluetooth firmware written successfully.\n\n"
-                                "Check the radio: Device Info ▸ BT Soft Ver.")
+                                "Restart the radio, then check the new version under "
+                                "Device Info ▸ BT Soft Ver.")
         elif kind == "error":
             self._set_busy(False)
             self.status_var.set(f"Failed: {payload}")
