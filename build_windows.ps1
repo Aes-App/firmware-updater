@@ -23,15 +23,14 @@ $py = Join-Path $venv "Scripts\python.exe"
 
 Write-Host "== Installing build deps ==" -ForegroundColor Cyan
 & $py -m pip install --upgrade pip
-# unicorn 2.1.4's win_amd64 native lib access-violates in uc_mem_map (crashes the
-# D890 JieLi auth on Windows) -- a 2.1.4-only regression. 2.1.3 is the last good
-# build (verified on x64: emulator constructs + auth runs; no pkg_resources dep).
-# macOS keeps 2.1.4 (this script is Windows-only; the .app spec is unaffected).
-& $py -m pip install bleak "unicorn==2.1.3" pyinstaller pillow
+# unicorn is NOT needed: the JieLi auth now runs in pure Python (bt_ota._jl_e1),
+# because unicorn's JIT/memory setup access-violates inside the frozen app on
+# hardened Windows. We neither install nor bundle it (the .exe spec excludes it).
+& $py -m pip install bleak pyinstaller pillow
 
-Write-Host "== Sanity: imports + emulated auth ==" -ForegroundColor Cyan
+Write-Host "== Sanity: imports + pure-Python auth (no unicorn) ==" -ForegroundColor Cyan
 $env:JL_OTA_AUTH_SO = (Resolve-Path "bt_ota\libjl_ota_auth.so")
-& $py -c "import bleak, unicorn; from bt_ota.jl_auth import AuthEmulator; print('auth sample', AuthEmulator().get_encrypted_auth_data(bytes([0]+list(range(1,17)))).hex())"
+& $py -c "import bleak; from bt_ota.jl_auth import AuthEmulator, _HAVE_UNICORN; print('auth sample (unicorn=%s):' % _HAVE_UNICORN, AuthEmulator().get_encrypted_auth_data(bytes([0]+list(range(1,17)))).hex())"
 
 # On Windows-on-ARM, an emulated x64/x86 Python still reports platform.machine()
 # == 'ARM64' (it reads PROCESSOR_ARCHITEW6432, which the emulator sets to the host

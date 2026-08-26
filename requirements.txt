@@ -1,5 +1,7 @@
-# Runtime dependencies (BLE transport + JieLi auth emulation)
-bleak>=0.21      # cross-platform BLE (macOS CoreBluetooth / Linux BlueZ / Windows WinRT)
-unicorn>=2.0     # runs the real JieLi auth crypto from libjl_ota_auth.so
+# Runtime dependency (BLE transport). The JieLi auth runs in pure Python
+# (bt_ota/_jl_e1.py) -- no native emulator needed for scanning/flashing.
+bleak>=0.21      # macOS CoreBluetooth / Linux BlueZ / Windows WinRT
 
+# Optional: unicorn>=2.0  -- only for validate_ufw (local .ufw structural check),
+# never used in frozen builds (crashes inside PyInstaller on hardened Windows).
 # To build the desktop apps, also: pip install pyinstaller pillow

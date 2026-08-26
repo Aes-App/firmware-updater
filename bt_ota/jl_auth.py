@@ -48,8 +48,10 @@ try:
         UC_ARM64_REG_SP, UC_ARM64_REG_LR, UC_ARM64_REG_PC, UC_ARM64_REG_TPIDR_EL0,
     )
     _HAVE_UNICORN = True
-except ImportError:  # pragma: no cover - surfaced with a friendly message in CLI
+except ImportError:  # pragma: no cover - unicorn is optional (validate_ufw only)
     _HAVE_UNICORN = False
+
+from ._jl_e1 import _E1  # pure-Python function_E1test (auth; no unicorn needed)
 
 
 # ---- addresses inside libjl_ota_auth.so (arm64 build, verified via objdump) --
@@ -114,17 +116,29 @@ class AuthEmulator:
     RET = 0x40000000
 
     def __init__(self, so_path: str | None = None):
-        if not _HAVE_UNICORN:
-            raise RuntimeError(
-                "The 'unicorn' package is required for OTA auth. "
-                "Install it: pip install unicorn"
-            )
         self.so_path = so_path or _default_so_path()
         if not os.path.exists(self.so_path):
             raise FileNotFoundError(
                 f"Auth library not found at {self.so_path}. Extract it from the "
                 "AnyTone OTA APK: python -m bt_ota.extract_auth_lib <OTA.apk>"
             )
+        self._so_data = open(self.so_path, "rb").read()
+        if self._so_data[:4] != b"\x7fELF":
+            raise ValueError(f"{self.so_path} is not an ELF file")
+        # Auth runs in pure Python (no unicorn) -- unicorn's JIT/memory setup
+        # access-violates inside a frozen app on hardened Windows. unicorn is only
+        # built lazily for validate_ufw (optional, dev/CLI convenience).
+        self._e1 = _E1(self._so_data)
+        self.uc = None
+
+    def _ensure_uc(self):
+        """Lazily build the Unicorn emulator; only validate_ufw needs it."""
+        if self.uc is not None:
+            return
+        if not _HAVE_UNICORN:
+            raise RuntimeError(
+                "validate_ufw needs the optional 'unicorn' package; the auth and "
+                "upgrade paths do not. Install it: pip install unicorn")
         self.uc = uc = Uc(UC_ARCH_ARM64, UC_MODE_ARM)
         data, segs = _load_elf_segments(self.so_path)
         mapped: list[tuple[int, int]] = []
@@ -201,16 +215,7 @@ class AuthEmulator:
 
         out[0] = 0x01; out[1:17] = E1test(addrConst@0x55b0, msg[1:17], keyConst@0x55b6).
         """
-        if len(msg17) != 17:
-            raise ValueError("auth message must be 17 bytes")
-        in_addr = self.SCRATCH
-        out_addr = self.SCRATCH + 0x100
-        self.uc.mem_write(in_addr, bytes(msg17))
-        self.uc.mem_write(out_addr, b"\x00" * 17)
-        self._call(FUNCTION_E1TEST, 0x55b0, in_addr + 1, 0x55b6, out_addr + 1)
-        out = bytearray(self.uc.mem_read(out_addr, 17))
-        out[0] = 1
-        return bytes(out)
+        return self._e1.transform(msg17)
 
     def validate_ufw(self, ufw: bytes) -> int:
         """Run native ``parse_fw_info(buf, len, out6, 6)``.
@@ -220,6 +225,10 @@ class AuthEmulator:
         64-byte header CRC and length checks passed - the file is a structurally
         valid JLUFW container. (The final go/no-go is the device's own E2 inquire.)
         """
+        if not _HAVE_UNICORN:
+            return 0  # structural check skipped without optional unicorn; the
+            # device's own inquire is the authoritative go/no-go gate anyway.
+        self._ensure_uc()
         data = 0x20000000
         size = (len(ufw) + 0xFFF) & ~0xFFF
         try:

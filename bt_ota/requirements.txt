@@ -1,2 +1,8 @@
 bleak>=0.21      # cross-platform BLE (macOS CoreBluetooth / Linux BlueZ / Windows)
-unicorn>=2.0     # runs the real JieLi auth crypto from libjl_ota_auth.so
+
+# unicorn is OPTIONAL: the JieLi auth now runs in pure Python (bt_ota/_jl_e1.py),
+# so scanning/flashing needs no native emulator. unicorn is only used by
+# validate_ufw (a local .ufw structural pre-check) and is intentionally NOT used
+# in frozen builds (its JIT/memory setup crashes inside a PyInstaller app on
+# hardened Windows). Install it for that convenience on dev/macOS:
+#   pip install "unicorn>=2.0"

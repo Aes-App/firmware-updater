@@ -30,7 +30,8 @@ for _asset in ("aesapp_logo.png", "aesapp_logo_sm.png"):
         datas += [(f"bt_ota/assets/{_asset}", "bt_ota/assets")]
 APP_ICON = "bt_ota/assets/AesApp.icns" if os.path.exists("bt_ota/assets/AesApp.icns") else None
 
-hiddenimports += ["bt_ota", "bt_ota.gui", "bt_ota.ota", "bt_ota.rcsp", "bt_ota.jl_auth"]
+hiddenimports += ["bt_ota", "bt_ota.gui", "bt_ota.ota", "bt_ota.rcsp", "bt_ota.jl_auth",
+                  "bt_ota.wiced", "bt_ota.client", "bt_ota._jl_e1", "bt_ota._jl_itab"]
 
 a = Analysis(
     ["bt_ota_gui.py"],
