@@ -1,9 +1,9 @@
 """Generate the AesApp branding assets for the GUI/app from a source logo.
 
-Run this from the python/ directory (needs Pillow + macOS iconutil):
+Run this from the repo root (needs Pillow + macOS iconutil):
 
-    ./.venv/bin/python make_assets.py                 # uses the default source
     ./.venv/bin/python make_assets.py /path/to/logo.png [--bg '#ffffff']
+    AESAPP_LOGO_SRC=/path/to/logo.png ./.venv/bin/python make_assets.py
 
 Writes:
     bt_ota/assets/aesapp_logo.png   in-app header logo (fits height, keeps aspect)
@@ -20,7 +20,9 @@ from PIL import Image, ImageChops, ImageDraw
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "bt_ota", "assets")
-DEFAULT_SRC = "/Users/shiji/Documents/Archive/AesApp/AesApp定稿源文件/AesApp1-1.jpg"
+# The source logo lives outside the repo; pass it as an argument or set this env
+# var (no personal path is hardcoded here).
+DEFAULT_SRC = os.environ.get("AESAPP_LOGO_SRC")
 
 LOGO_HEIGHT = 140         # disclaimer / about logo height (px, rendered LANCZOS)
 LOGO_HEIGHT_SM = 56       # main-window header logo height (px)
@@ -163,6 +165,8 @@ def main(argv=None) -> int:
                                       "(rounded transparent corners are added)")
     p.add_argument("--margin", type=float, default=0.06, help="icon transparent margin fraction")
     args = p.parse_args(argv)
+    if not args.src:
+        p.error("no source logo given — pass a path or set AESAPP_LOGO_SRC")
     make(args.src, _parse_bg(args.bg), icon_full=args.icon_full,
          icon_src=args.icon_src, margin=args.margin)
     return 0
