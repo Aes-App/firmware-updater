@@ -1,20 +1,20 @@
-# PyInstaller spec for the Windows build of the BT Firmware Updater (onefile .exe).
+# PyInstaller spec for the Windows build of the AesApp Radio Updater (onefile .exe).
 #   Build on Windows (x64 or x86 or arm64 Python):
 #       pyinstaller --noconfirm --clean bt_ota_gui_win.spec
-#   -> dist/AesApp BT Updater.exe   (single self-contained executable)
+#   -> dist/AesApp Radio Updater.exe   (single self-contained executable)
 #
 # The .exe architecture matches the Python you build with. On Windows-on-ARM you
 # can build x64 (and x86) via emulation by installing an x64 (x86) Python.
 import os
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
-APP_NAME = "AesApp BT Updater"
+APP_NAME = "AesApp Radio Updater"
 
 datas, binaries, hiddenimports = [], [], []
 # NB: unicorn is deliberately NOT bundled on Windows. The JieLi auth now runs in
 # pure Python (bt_ota._jl_e1); unicorn's JIT/memory setup access-violates inside a
 # frozen app on hardened Windows. It stays an optional dev/mac dep for validate_ufw.
-for pkg in ("bleak",):
+for pkg in ("bleak", "serial"):   # serial = pyserial, for the radio/boards tab
     d, b, h = collect_all(pkg)
     datas += d; binaries += b; hiddenimports += h
 
@@ -41,12 +41,19 @@ datas += [
     ("bt_ota/libjl_ota_auth.so", "bt_ota"),
     ("bt_ota/THIRD_PARTY_NOTICES.txt", "bt_ota"),
 ]
-for _asset in ("aesapp_logo.png", "aesapp_logo_sm.png", "AesApp_icon.png"):
+for _asset in ("aesapp_logo.png", "aesapp_logo_sm.png", "AesApp_icon.png",
+               "SCT3288.png", "NR.png", "ICON.png", "FW.png"):
     if os.path.exists(f"bt_ota/assets/{_asset}"):
         datas += [(f"bt_ota/assets/{_asset}", "bt_ota/assets")]
 hiddenimports += ["bt_ota", "bt_ota.gui", "bt_ota.ota", "bt_ota.rcsp",
                   "bt_ota.jl_auth", "bt_ota.wiced", "bt_ota.client",
                   "bt_ota._jl_e1", "bt_ota._jl_itab"]
+# radio/boards firmware tab (lazily imported in bt_ota.gui.main) + its vendored
+# stdlib-only precompilers + pyserial's Windows port enumerator.
+hiddenimports += ["radio_fw", "radio_fw.gui_tab", "radio_fw.engines", "radio_fw.compiler",
+                  "radio_fw.spec", "radio_fw.vendor", "radio_fw.vendor.fwupd_cps",
+                  "radio_fw.vendor.fwupd_nr", "radio_fw.vendor.fwupd_sct",
+                  "serial.tools.list_ports", "serial.tools.list_ports_windows"]
 
 ICON = "bt_ota/assets/AesApp.ico" if os.path.exists("bt_ota/assets/AesApp.ico") else None
 

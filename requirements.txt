@@ -1,6 +1,7 @@
-# Runtime dependency (BLE transport). The JieLi auth runs in pure Python
-# (bt_ota/_jl_e1.py) -- no native emulator needed for scanning/flashing.
-bleak>=0.21      # macOS CoreBluetooth / Linux BlueZ / Windows WinRT
+# Runtime dependencies. The JieLi auth runs in pure Python (bt_ota/_jl_e1.py)
+# -- no native emulator needed for scanning/flashing.
+bleak>=0.21      # macOS CoreBluetooth / Linux BlueZ / Windows WinRT (BT-module tab)
+pyserial>=3.5    # CDC-ACM serial (radio firmware / boards tab)
 
 # Optional: unicorn>=2.0  -- only for validate_ufw (local .ufw structural check),
 # never used in frozen builds (crashes inside PyInstaller on hardened Windows).

@@ -1,4 +1,5 @@
 bleak>=0.21      # cross-platform BLE (macOS CoreBluetooth / Linux BlueZ / Windows)
+pyserial>=3.5    # CDC-ACM serial transport for the radio firmware / boards tab
 
 # unicorn is OPTIONAL: the JieLi auth now runs in pure Python (bt_ota/_jl_e1.py),
 # so scanning/flashing needs no native emulator. unicorn is only used by

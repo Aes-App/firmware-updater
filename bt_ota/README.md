@@ -115,7 +115,7 @@ Build a self-contained macOS app (bundles Python, bleak, unicorn, and the auth
 pip install pyinstaller pillow     # + `brew install python-tk@3.14` for Tk
 python make_assets.py "/path/to/AesApp-logo.jpg"   # optional: app icon + in-app logo
 pyinstaller --noconfirm --clean bt_ota_gui.spec
-# -> dist/AesApp BT Updater.app
+# -> dist/AesApp Radio Updater.app
 ```
 
 `make_assets.py` renders the logo into `bt_ota/assets/` (an `aesapp_logo.png`
@@ -124,7 +124,7 @@ if present and works without them too. On first run the app shows a disclaimer
 that must be accepted (stored per-user under Application Support).
 
 The app is ad-hoc signed, so first launch: right-click ▸ Open (or
-`xattr -dr com.apple.quarantine "AesApp BT Updater.app"`). On the first Scan
+`xattr -dr com.apple.quarantine "AesApp Radio Updater.app"`). On the first Scan
 macOS asks for Bluetooth permission — Allow it. (For Windows, build with
 `build_windows.ps1` + `bt_ota_gui_win.spec`; the plist keys here are macOS-only.)
 
@@ -142,7 +142,7 @@ xcrun notarytool store-credentials aesapp-notary \
 # each release:
 CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 NOTARY_PROFILE=aesapp-notary \
-./sign_and_notarize.sh "dist/AesApp BT Updater.app"
+./sign_and_notarize.sh "dist/AesApp Radio Updater.app"
 ```
 
 `sign_and_notarize.sh` signs every embedded binary with the hardened runtime +

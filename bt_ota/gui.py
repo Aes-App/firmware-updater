@@ -21,37 +21,42 @@ from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
 from .client import MODELS, firmware_kind, make_client, scan_devices
 
-APP_TITLE = "BT Firmware Updater"
+APP_TITLE = "AesApp Radio Updater"
 VENDOR = "AesApp Inc."
 WEBSITE = "https://aes.app/"
-VERSION = "0.3.0"
-LOG_PREFIX = "[aesapp_bt_ota]"
+VERSION = "0.5.0"
+LOG_PREFIX = "[aesapp]"
 
-DISCLAIMER_VERSION = "2"
+DISCLAIMER_VERSION = "3"
 DISCLAIMER = (
-    "BT Firmware Updater — Disclaimer & Terms of Use\n\n"
+    "AesApp Radio Updater — Disclaimer & Terms of Use\n\n"
     "This software is provided by AesApp Inc. \"AS IS\" and \"AS AVAILABLE\", without "
     "warranty of any kind, express or implied, including but not limited to the implied "
     "warranties of merchantability, fitness for a particular purpose, and non-infringement.\n\n"
-    "Updating the Bluetooth firmware of a radio is inherently risky and may render the "
-    "device, or its Bluetooth module, temporarily or permanently inoperable. You use this "
-    "software entirely at your own risk.\n\n"
+    "Updating the firmware of a radio is inherently risky and may render the device — or "
+    "any of its internal components — temporarily or permanently inoperable. This app can "
+    "update a radio's Bluetooth module, its main firmware, its baseband DSP, its "
+    "noise-reduction board, and its icon/font storage. The board- and firmware-level "
+    "updates are NOT verified or read back by the radio: a wrong, incomplete, or interrupted "
+    "write is only discovered when the radio is switched on, and can leave it unable to "
+    "boot. You use this software entirely at your own risk.\n\n"
     "To the fullest extent permitted by law, AesApp Inc. and its directors, employees, and "
     "contributors shall not be liable for any direct, indirect, incidental, special, "
     "consequential, or exemplary damages — including but not limited to damaged, bricked, "
     "or malfunctioning hardware, loss of data, or loss of use — arising out of or in any "
     "way connected with the use of, or inability to use, this software, even if advised of "
     "the possibility of such damages.\n\n"
-    "You alone are responsible for: using a firmware file intended for your exact device "
-    "model; keeping the radio powered and undisturbed throughout an update; and complying "
-    "with all applicable laws, regulations, and manufacturer terms.\n\n"
+    "You alone are responsible for: using update files intended for your exact device "
+    "model; keeping the radio powered, connected, and undisturbed throughout an update; and "
+    "complying with all applicable laws, regulations, and manufacturer terms.\n\n"
     "TRADEMARKS & NON-AFFILIATION. \"AnyTone\" is a trademark of Qixiang Electron Science "
     "& Technology Co., Ltd. \"JieLi\" (杰理) is a trademark of Zhuhai Jieli Technology Co., "
-    "Ltd. \"Cypress\" and \"WICED\" are trademarks of Infineon Technologies AG. All "
-    "trademarks are the property of their respective owners and are used for identification "
-    "only. This software is an independent, unofficial tool by AesApp Inc. and is not "
-    "affiliated with, authorized, endorsed, or sponsored by any of these companies. See "
-    "\"Third-Party Notices\" (in About) for open-source attributions.\n\n"
+    "Ltd. \"Cypress\" and \"WICED\" are trademarks of Infineon Technologies AG. \"SiCOMM\" "
+    "is a trademark of its respective owner. All trademarks are the property of their "
+    "respective owners and are used for identification only. This software is an "
+    "independent, unofficial tool by AesApp Inc. and is not affiliated with, authorized, "
+    "endorsed, or sponsored by any of these companies. See \"Third-Party Notices\" (in "
+    "About) for open-source attributions.\n\n"
     "By choosing \"Agree & Continue\" you acknowledge that you have read and understood "
     "this disclaimer and accept all risk and responsibility for your use of this software."
 )
@@ -94,10 +99,10 @@ def _set_window_icon(root) -> None:
 
 def _config_dir() -> str:
     if sys.platform == "darwin":
-        d = os.path.expanduser("~/Library/Application Support/AesApp BT Updater")
+        d = os.path.expanduser("~/Library/Application Support/AesApp Radio Updater")
     else:
         d = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
-                         "aesapp-bt-updater")
+                         "aesapp-radio-updater")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -269,10 +274,17 @@ class _AsyncLoop:
 
 # ---- main window ------------------------------------------------------------
 class App:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk, container: tk.Widget | None = None):
         self.root = root
-        self.root.title(APP_TITLE)
-        self.root.minsize(640, 500)
+        # `container` is the widget the UI is parented on: the root when this is
+        # the whole window, or a Notebook page frame when it is one tab. Window-
+        # level setup (title/minsize/close protocol) is left to main() in the
+        # tabbed case so the two tabs share one close handler.
+        self.ui = container if container is not None else root
+        self._standalone = container is None
+        if self._standalone:
+            self.root.title(APP_TITLE)
+            self.root.minsize(640, 500)
 
         self._aio = _AsyncLoop()
         self._q: "queue.Queue[tuple]" = queue.Queue()
@@ -282,21 +294,25 @@ class App:
         self._build_ui()
         if os.environ.get("BT_OTA_DEBUG"):
             self._append_log(f"{LOG_PREFIX} debug logging on — logs at {_config_dir()}")
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        if self._standalone:
+            self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(80, self._drain)
 
     def _build_ui(self):
         pad = dict(padx=8, pady=6)
 
-        header = ttk.Frame(self.root)
-        header.pack(fill="x", **pad)
-        _brand_header(header, small=True).pack(side="left")
-        ttk.Button(header, text="About", command=lambda: show_about(self.root)).pack(side="right")
-
-        ttk.Separator(self.root).pack(fill="x", padx=8)
+        # The brand header + About live here only when this App is the whole
+        # window; in the tabbed layout main() puts one shared header above the
+        # Notebook so both tabs carry it.
+        if self._standalone:
+            header = ttk.Frame(self.ui)
+            header.pack(fill="x", **pad)
+            _brand_header(header, small=True).pack(side="left")
+            ttk.Button(header, text="About", command=lambda: show_about(self.root)).pack(side="right")
+            ttk.Separator(self.ui).pack(fill="x", padx=8)
 
         # Step 1: model
-        model = ttk.Frame(self.root)
+        model = ttk.Frame(self.ui)
         model.pack(fill="x", **pad)
         ttk.Label(model, text="1. Model:").pack(side="left")
         self.model_var = tk.StringVar(value="jieli")
@@ -304,7 +320,7 @@ class App:
             ttk.Radiobutton(model, text=label, value=kind, variable=self.model_var,
                             command=self._on_model_change).pack(side="left", padx=(8, 0))
 
-        top = ttk.Frame(self.root)
+        top = ttk.Frame(self.ui)
         top.pack(fill="x", **pad)
         top.columnconfigure(1, weight=1)
         ttk.Label(top, text="2. Radio:").grid(row=0, column=0, sticky="w")
@@ -321,7 +337,7 @@ class App:
         self.browse_btn = ttk.Button(top, text="Browse…", command=self.on_browse)
         self.browse_btn.grid(row=1, column=2, sticky="e", pady=(6, 0))
 
-        action = ttk.Frame(self.root)
+        action = ttk.Frame(self.ui)
         action.pack(fill="x", **pad)
         action.columnconfigure(1, weight=1)
         self.write_btn = ttk.Button(action, text="4. Connect & Write", command=self.on_write)
@@ -329,12 +345,12 @@ class App:
         self.progress = ttk.Progressbar(action, mode="determinate", maximum=100.0)
         self.progress.grid(row=0, column=1, sticky="ew", padx=(10, 0))
 
-        ttk.Label(self.root, text="Log").pack(anchor="w", padx=8)
-        self.log = scrolledtext.ScrolledText(self.root, height=15, wrap="word", state="disabled")
+        ttk.Label(self.ui, text="Log").pack(anchor="w", padx=8)
+        self.log = scrolledtext.ScrolledText(self.ui, height=15, wrap="word", state="disabled")
         self.log.pack(fill="both", expand=True, padx=8, pady=(0, 6))
 
         self.status_var = tk.StringVar(value="1. Select your model  2. Scan and pick the radio  3. Choose firmware  4. Connect & Write")
-        ttk.Label(self.root, textvariable=self.status_var, relief="sunken", anchor="w").pack(
+        ttk.Label(self.ui, textvariable=self.status_var, relief="sunken", anchor="w").pack(
             fill="x", side="bottom", ipady=2)
 
     # -- thread-safe UI plumbing --------------------------------------------
@@ -555,16 +571,28 @@ class App:
             except Exception:
                 pass
 
-    def _on_close(self):
+    def is_writing(self) -> bool:
+        """True while a BLE scan/connect/write is in flight (for the shared close
+        handler — closing mid-write can brick the BT module)."""
+        return self._busy
+
+    def stop(self):
+        """Stop the background asyncio loop (called by the shared close handler
+        when this App is one tab of a Notebook)."""
         try:
             self._aio.stop()
         except Exception:
             pass
+
+    def _on_close(self):
+        self.stop()
         self.root.destroy()
 
 
 def _diag() -> int:
-    """Frozen-bundle import self-test: no window, no BLE permission needed."""
+    """Frozen-bundle import self-test for BOTH tabs: no window, no BLE permission
+    needed. Catches a missing hiddenimport or an unbundled asset in a frozen
+    build without launching the UI."""
     import bleak  # noqa: F401
     if sys.platform == "darwin":
         import bleak.backends.corebluetooth.scanner  # noqa: F401
@@ -575,7 +603,21 @@ def _diag() -> int:
     from .jl_auth import AuthEmulator
     emu = AuthEmulator()
     out = emu.get_encrypted_auth_data(bytes([0] + list(range(1, 17))))
-    print(f"DIAG OK: bleak+backend+unicorn+so load fine; auth sample={out.hex()}")
+
+    # Radio and Boards tab: its serial stack, precompilers, and step photos.
+    import serial  # noqa: F401
+    from serial.tools import list_ports  # noqa: F401
+    from radio_fw import engines, compiler, spec  # noqa: F401
+    from radio_fw.gui_tab import _asset_path as _rf_asset
+    missing = [spec.KINDS[k]["image"] for k in spec.WRITE_ORDER
+               if not os.path.exists(_rf_asset(spec.KINDS[k]["image"]))]
+    if missing:
+        print(f"DIAG FAIL: step images not found in the bundle: {missing}")
+        return 1
+    # prove the NR frame grammar agrees end to end (engine <-> vendored precompiler)
+    assert engines.NR_LEN_NOTIFY_REPLY.hex() == "aa55010003e7a2"
+    print(f"DIAG OK: BT tab (bleak+so, auth sample={out.hex()}); "
+          f"Radio tab (pyserial {serial.VERSION}, precompilers, {len(spec.WRITE_ORDER)} step photos)")
     return 0
 
 
@@ -609,6 +651,7 @@ def main():
     _install_diagnostics()
     root = tk.Tk()
     root.title(APP_TITLE)
+    root.minsize(760, 640)
     _set_window_icon(root)
     try:
         ttk.Style().theme_use("aqua")  # native look on macOS; ignored elsewhere
@@ -618,7 +661,56 @@ def main():
     if not run_disclaimer_gate(root):
         root.destroy()
         return
-    App(root)
+
+    # One shared brand header (logo + title + "by AesApp Inc." + website + About)
+    # above the tabs, so both tabs carry the identity — not just the Bluetooth one.
+    header = ttk.Frame(root)
+    header.pack(fill="x", padx=8, pady=6)
+    _brand_header(header, small=True).pack(side="left")
+    ttk.Button(header, text="About", command=lambda: show_about(root)).pack(side="right")
+    ttk.Separator(root).pack(fill="x", padx=8)
+
+    # Two tabs: the original Bluetooth-module updater, and the radio/boards
+    # firmware wizard. The BT App becomes tab 1 (parented on its page frame);
+    # the radio/boards tab is imported lazily so a missing serial stack degrades
+    # to a message in that tab instead of taking down the whole window.
+    nb = ttk.Notebook(root)
+    nb.pack(fill="both", expand=True)
+
+    bt_page = ttk.Frame(nb)
+    nb.add(bt_page, text="Bluetooth Module Update")
+    app = App(root, container=bt_page)
+
+    radio_page = ttk.Frame(nb)
+    nb.add(radio_page, text="Radio and Boards Updates")
+    boards = None
+    try:
+        from radio_fw.gui_tab import RadioBoardsTab
+        boards = RadioBoardsTab(radio_page, root)
+    except Exception as e:  # noqa: BLE001
+        ttk.Label(radio_page, foreground="#b00020", justify="left", wraplength=600,
+                  text="Radio and Boards updates are unavailable in this build: " + str(e)
+                       + "\n\nThe Bluetooth Module Update tab is unaffected.").pack(padx=16, pady=16)
+
+    def _on_close():
+        busy = False
+        try:
+            busy = app.is_writing()   # BLE scan/connect/write on the asyncio loop
+        except Exception:
+            pass
+        if not busy and boards is not None:
+            try:
+                busy = boards.is_writing()   # a serial firmware/board write
+            except Exception:
+                pass
+        if busy and not messagebox.askyesno(
+                "Quit during a write?",
+                "An update is in progress. Quitting now can leave a radio unbootable.\n\nQuit anyway?"):
+            return
+        app.stop()
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", _on_close)
     _bring_to_front(root)
     root.mainloop()
 

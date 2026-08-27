@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sign, notarize and staple the AesApp BT Updater .app with a Developer ID.
+# Sign, notarize and staple the AesApp Radio Updater .app with a Developer ID.
 #
 # Prerequisites (one-time):
 #   1. A "Developer ID Application" certificate in your login keychain
@@ -13,10 +13,10 @@
 # Usage:
 #   CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 #   NOTARY_PROFILE=aesapp-notary \
-#   ./sign_and_notarize.sh ["dist/AesApp BT Updater.app"]
+#   ./sign_and_notarize.sh ["dist/AesApp Radio Updater.app"]
 set -euo pipefail
 
-APP="${1:-dist/AesApp BT Updater.app}"
+APP="${1:-dist/AesApp Radio Updater.app}"
 IDENTITY="${CODESIGN_IDENTITY:?Set CODESIGN_IDENTITY to your 'Developer ID Application: ... (TEAMID)' identity}"
 PROFILE="${NOTARY_PROFILE:-aesapp-notary}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -56,5 +56,5 @@ echo "==> Gatekeeper assessment…"
 spctl -a -vvv -t exec "$APP" || true
 
 echo "==> Done. Package for distribution:"
-DIST_ZIP="AesApp-BT-Updater-macos-arm64.zip"
+DIST_ZIP="AesApp-Radio-Updater-macos-arm64.zip"
 ( cd "$(dirname "$APP")" && rm -f "$DIST_ZIP" && ditto -c -k --sequesterRsrc --keepParent "$(basename "$APP")" "$DIST_ZIP" && echo "   wrote $(dirname "$APP")/$DIST_ZIP" )

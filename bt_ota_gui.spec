@@ -1,17 +1,18 @@
-# PyInstaller spec for the AesApp BT Updater GUI.
-#   Build from the python/ directory:  pyinstaller bt_ota_gui.spec
-# Produces dist/AesApp BT Updater.app (macOS) with the Bluetooth usage keys.
+# PyInstaller spec for the AesApp Radio Updater GUI.
+#   Build from the repo root:  pyinstaller bt_ota_gui.spec
+# Produces dist/AesApp Radio Updater.app (macOS) with the Bluetooth usage keys.
 #
 # Branding assets are optional at build time; generate them with:
 #   ./.venv/bin/python make_assets.py "/path/to/AesApp-logo.jpg"
 import os
 from PyInstaller.utils.hooks import collect_all
 
-APP_NAME = "AesApp BT Updater"
+APP_NAME = "AesApp Radio Updater"
 
 datas, binaries, hiddenimports = [], [], []
 # bleak (BLE) + unicorn (auth emulator) + the pyobjc frameworks bleak uses on macOS
-for pkg in ("bleak", "unicorn", "CoreBluetooth", "Foundation", "libdispatch", "objc"):
+# + pyserial (the radio/boards firmware tab talks to the CDC-ACM port)
+for pkg in ("bleak", "unicorn", "CoreBluetooth", "Foundation", "libdispatch", "objc", "serial"):
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -24,14 +25,21 @@ for pkg in ("bleak", "unicorn", "CoreBluetooth", "Foundation", "libdispatch", "o
 datas += [("bt_ota/libjl_ota_auth.so", "bt_ota")]
 # third-party notices (Apache-2.0 attribution for the JieLi lib + trademarks)
 datas += [("bt_ota/THIRD_PARTY_NOTICES.txt", "bt_ota")]
-# ship branding assets if they have been generated
-for _asset in ("aesapp_logo.png", "aesapp_logo_sm.png", "AesApp_icon.png"):
+# ship branding assets + the radio/boards step photos if present
+for _asset in ("aesapp_logo.png", "aesapp_logo_sm.png", "AesApp_icon.png",
+               "SCT3288.png", "NR.png", "ICON.png", "FW.png"):
     if os.path.exists(f"bt_ota/assets/{_asset}"):
         datas += [(f"bt_ota/assets/{_asset}", "bt_ota/assets")]
 APP_ICON = "bt_ota/assets/AesApp.icns" if os.path.exists("bt_ota/assets/AesApp.icns") else None
 
 hiddenimports += ["bt_ota", "bt_ota.gui", "bt_ota.ota", "bt_ota.rcsp", "bt_ota.jl_auth",
                   "bt_ota.wiced", "bt_ota.client", "bt_ota._jl_e1", "bt_ota._jl_itab"]
+# radio/boards firmware tab (lazily imported in bt_ota.gui.main, so name it here)
+# + its vendored, stdlib-only precompilers, + pyserial's port enumerator.
+hiddenimports += ["radio_fw", "radio_fw.gui_tab", "radio_fw.engines", "radio_fw.compiler",
+                  "radio_fw.spec", "radio_fw.vendor", "radio_fw.vendor.fwupd_cps",
+                  "radio_fw.vendor.fwupd_nr", "radio_fw.vendor.fwupd_sct",
+                  "serial.tools.list_ports"]
 
 a = Analysis(
     ["bt_ota_gui.py"],
@@ -58,12 +66,12 @@ app = BUNDLE(
     coll,
     name=f"{APP_NAME}.app",
     icon=APP_ICON,
-    bundle_identifier="app.aes.bt-updater",
+    bundle_identifier="app.aes.radio-updater",
     info_plist={
         "CFBundleName": APP_NAME,
         "CFBundleDisplayName": APP_NAME,
-        "CFBundleShortVersionString": "0.3.0",
-        "CFBundleVersion": "0.3.0",
+        "CFBundleShortVersionString": "0.5.0",
+        "CFBundleVersion": "0.5.0",
         "LSMinimumSystemVersion": "11.0",
         "NSHighResolutionCapable": True,
         "NSHumanReadableCopyright": "© AesApp Inc.",

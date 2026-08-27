@@ -1,4 +1,4 @@
-# Build the Windows BT Firmware Updater .exe.
+# Build the Windows AesApp Radio Updater .exe.
 #
 # Run from the python/ directory (the one containing bt_ota_gui_win.spec), in a
 # copy of the repo that still has bt_ota\libjl_ota_auth.so and bt_ota\assets\*
@@ -26,7 +26,7 @@ Write-Host "== Installing build deps ==" -ForegroundColor Cyan
 # unicorn is NOT needed: the JieLi auth now runs in pure Python (bt_ota._jl_e1),
 # because unicorn's JIT/memory setup access-violates inside the frozen app on
 # hardened Windows. We neither install nor bundle it (the .exe spec excludes it).
-& $py -m pip install bleak pyinstaller pillow
+& $py -m pip install bleak pyserial pyinstaller pillow
 
 Write-Host "== Sanity: imports + pure-Python auth (no unicorn) ==" -ForegroundColor Cyan
 $env:JL_OTA_AUTH_SO = (Resolve-Path "bt_ota\libjl_ota_auth.so")
@@ -50,7 +50,7 @@ if ($arch) {
 Write-Host "== Building (PyInstaller onefile) ==" -ForegroundColor Cyan
 & $py -m PyInstaller --noconfirm --clean bt_ota_gui_win.spec
 
-$exe = "dist\AesApp BT Updater.exe"
+$exe = "dist\AesApp Radio Updater.exe"
 if (Test-Path $exe) {
     Write-Host "BUILT: $exe" -ForegroundColor Green
     Get-Item $exe | Select-Object Name,Length,LastWriteTime | Format-List
