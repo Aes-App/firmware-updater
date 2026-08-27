@@ -61,19 +61,19 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
-# onedir (a folder), NOT onefile: unicorn's JIT/memory access-violates inside a
-# PyInstaller ONEFILE on Windows (uc_mem_map faults in the frozen process, though
-# the identical unicorn works fine in a venv on the same PC) -- a known
-# unicorn+onefile issue. onedir keeps the DLLs in a real folder next to the exe,
-# like a normal install, which unicorn is happy with.
+# onefile: a single self-contained .exe (no _internal folder). Safe again now that
+# unicorn is gone -- the onedir workaround existed only because unicorn's uc_mem_map
+# access-violated inside a frozen app; the pure-Python auth (bt_ota._jl_e1) has no
+# such issue. The bundled .so + assets unpack to a temp _MEIPASS dir at launch, which
+# jl_auth._default_so_path and gui._asset_path both already resolve. Trade-off vs
+# onedir: ~1-3s slower cold start (extraction) and some EDR flags temp-DLL loading.
 exe = EXE(
-    pyz, a.scripts, [],
-    exclude_binaries=True,
+    pyz, a.scripts, a.binaries, a.datas, [],
     name=APP_NAME,
     console=False,           # windowed GUI, no console
     disable_windowed_traceback=False,
     icon=ICON,
     version=None,
     upx=False,
+    runtime_tmpdir=None,
 )
-coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name=APP_NAME)
