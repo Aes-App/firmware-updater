@@ -80,6 +80,18 @@ def _load_logo(small: bool = False) -> tk.PhotoImage | None:
     return None
 
 
+def _set_window_icon(root) -> None:
+    """Set the taskbar/titlebar icon to the AesApp mark; Tk shows its own blue
+    feather otherwise. iconphoto is cross-platform (the .app's .icns drives the
+    mac Dock, so this is mainly for Windows/Linux)."""
+    try:
+        img = tk.PhotoImage(file=_asset_path("AesApp_icon.png"))
+        root.iconphoto(True, img)
+        root._app_icon = img  # keep a reference so Tk doesn't garbage-collect it
+    except Exception:
+        pass
+
+
 def _config_dir() -> str:
     if sys.platform == "darwin":
         d = os.path.expanduser("~/Library/Application Support/AesApp BT Updater")
@@ -397,6 +409,9 @@ class App:
         path = self.file_var.get().strip()
         if path and firmware_kind(path) not in ("unknown", kind):
             self.file_var.set("")
+        # re-order any already-scanned radios so the one for this model floats up
+        if self._devices:
+            self._refresh_device_labels(select_top=True)
 
     def on_browse(self):
         kind = self.model_var.get()
@@ -428,15 +443,57 @@ class App:
 
     def _on_scan_result(self, cands):
         self._devices = cands
-        labels = [f"{name or '(no name)'}   [{rssi} dBm]" for _dev, rssi, name in cands]
-        self.device_box["values"] = labels
+        labels = self._refresh_device_labels(select_top=True)
         if labels:
-            self.device_box.current(0)
             self.status_var.set(f"Found {len(labels)} device(s). Select one, choose a {self._model_ext()} file, then Connect & Write.")
             self._append_log(f"{LOG_PREFIX} found {len(labels)} candidate(s).")
         else:
             self.status_var.set("No radios found. Is Bluetooth on and in pairing mode?")
             self._append_log(f"{LOG_PREFIX} no candidates found.")
+
+    def _refresh_device_labels(self, select_top: bool = False):
+        """(Re)build the device dropdown from self._devices, floating the radio
+        that matches the selected model to the top. Run after a scan and whenever
+        the model selection changes."""
+        self._devices = self._sort_candidates(self._devices)
+        labels = [self._device_label(dev, rssi, local_name)
+                  for dev, rssi, local_name in self._devices]
+        self.device_box["values"] = labels
+        if labels and select_top:
+            self.device_box.current(0)
+        return labels
+
+    def _sort_candidates(self, cands):
+        """Sort the scanned radios: the one matching the selected model first,
+        then by signal strength (works regardless of the incoming order, so
+        switching models re-sorts cleanly). The D890 (JieLi) is identified by its
+        advertised local name ("D890UV"); the D578/D878 (WICED) module by its
+        dev.name ("ELET_…" prefix)."""
+        jieli = self.model_var.get() == "jieli"
+        def rank(item):
+            dev, rssi, local_name = item
+            ln = (local_name or "").upper()
+            dn = (getattr(dev, "name", None) or "").upper()
+            match = ("D890" in ln or "890UV" in ln) if jieli \
+                else (dn.startswith("ELET_") or ln.startswith("ELET_"))
+            r = rssi if isinstance(rssi, (int, float)) else -999
+            return (0 if match else 1, -r)
+        return sorted(cands, key=rank)
+
+    @staticmethod
+    def _device_label(dev, rssi, local_name) -> str:
+        """`"Local Name" (dev.name) [-45 dBm]` when the radio advertises a local
+        name — the radio's own surrounding quotes are stripped (the D890 literally
+        advertises `"D890UV"`, quotes and all) and dev.name is appended only when
+        it adds something (e.g. the D890's `ET25SE_BLE_…`). When dev.name just
+        repeats the local name it's dropped rather than padded with the address.
+        Radios with no local name show their dev.name / address plainly."""
+        ln = (local_name or "").strip().strip('"').strip()
+        dn = (getattr(dev, "name", None) or "").strip().strip('"').strip()
+        if ln:
+            tail = f" ({dn})" if (dn and dn.lower() != ln.lower()) else ""
+            return f'"{ln}"{tail} [{rssi} dBm]'
+        return f'{dn or (dev.address or "").strip() or "(no name)"} [{rssi} dBm]'
 
     def on_write(self):
         if self._busy:
@@ -458,7 +515,9 @@ class App:
                 f"{MODELS.get(fk, fk)} file:\n  {os.path.basename(path)}\n\nFlash anyway?",
             ):
                 return
-        device, _rssi, name = self._devices[idx]
+        device, _rssi, local_name = self._devices[idx]
+        name = ((local_name or "").strip().strip('"').strip()
+                or device.name or device.address)
         if not messagebox.askyesno(
             "Confirm firmware write",
             f"Write\n  {os.path.basename(path)}\nto the Bluetooth module of\n  {name}\n"
@@ -550,6 +609,7 @@ def main():
     _install_diagnostics()
     root = tk.Tk()
     root.title(APP_TITLE)
+    _set_window_icon(root)
     try:
         ttk.Style().theme_use("aqua")  # native look on macOS; ignored elsewhere
     except tk.TclError:

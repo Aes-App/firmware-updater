@@ -41,7 +41,7 @@ datas += [
     ("bt_ota/libjl_ota_auth.so", "bt_ota"),
     ("bt_ota/THIRD_PARTY_NOTICES.txt", "bt_ota"),
 ]
-for _asset in ("aesapp_logo.png", "aesapp_logo_sm.png"):
+for _asset in ("aesapp_logo.png", "aesapp_logo_sm.png", "AesApp_icon.png"):
     if os.path.exists(f"bt_ota/assets/{_asset}"):
         datas += [(f"bt_ota/assets/{_asset}", "bt_ota/assets")]
 hiddenimports += ["bt_ota", "bt_ota.gui", "bt_ota.ota", "bt_ota.rcsp",

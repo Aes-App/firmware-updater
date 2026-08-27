@@ -135,6 +135,9 @@ def make(src: str, bg=(255, 255, 255, 255), icon_full: bool = False,
     icon.save(os.path.join(ASSETS, "AesApp.ico"),
               sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
     print(f"wrote {os.path.join(ASSETS, 'AesApp.ico')}")
+    # Window/taskbar icon: Tk's iconphoto needs a PNG (not .ico); .app Dock uses .icns.
+    icon.resize((256, 256), Image.LANCZOS).save(os.path.join(ASSETS, "AesApp_icon.png"))
+    print(f"wrote {os.path.join(ASSETS, 'AesApp_icon.png')}")
 
     if sys.platform == "darwin":
         iconset = os.path.join(ASSETS, "AesApp.iconset")

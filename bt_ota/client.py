@@ -49,13 +49,16 @@ def make_client(firmware_path: str, *, kind: Optional[str] = None, use_auth: boo
 async def scan_devices(timeout: float = 8.0, name_filter: Optional[str] = None):
     """All connectable named BLE devices across both families (JieLi + WICED).
 
-    Returns (device, rssi, name) tuples; the user picks their radio and the
-    protocol is chosen from the firmware file they select.
+    Returns (device, rssi, local_name) tuples — local_name is the advertised BLE
+    Complete Local Name (may be "" if the radio doesn't advertise one; callers
+    fall back to device.name / device.address). The user picks their radio and
+    the protocol is chosen from the firmware file they select.
     """
     found = await BleakScanner.discover(timeout=timeout, return_adv=True)
     out = []
     for dev, adv in found.values():
-        name = adv.local_name or dev.name or ""
+        local_name = adv.local_name or ""
+        name = local_name or dev.name or ""      # best display name, for matching
         uuids = [u.lower() for u in (adv.service_uuids or [])]
         candidate = (
             JIELI_SERVICE in uuids or WICED_SERVICE in uuids
@@ -67,6 +70,6 @@ async def scan_devices(timeout: float = 8.0, name_filter: Optional[str] = None):
                 continue
         elif not (name or candidate):
             continue
-        out.append((dev, adv.rssi, name))
+        out.append((dev, adv.rssi, local_name))
     out.sort(key=lambda t: t[1], reverse=True)
     return out

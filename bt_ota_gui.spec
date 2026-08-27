@@ -25,7 +25,7 @@ datas += [("bt_ota/libjl_ota_auth.so", "bt_ota")]
 # third-party notices (Apache-2.0 attribution for the JieLi lib + trademarks)
 datas += [("bt_ota/THIRD_PARTY_NOTICES.txt", "bt_ota")]
 # ship branding assets if they have been generated
-for _asset in ("aesapp_logo.png", "aesapp_logo_sm.png"):
+for _asset in ("aesapp_logo.png", "aesapp_logo_sm.png", "AesApp_icon.png"):
     if os.path.exists(f"bt_ota/assets/{_asset}"):
         datas += [(f"bt_ota/assets/{_asset}", "bt_ota/assets")]
 APP_ICON = "bt_ota/assets/AesApp.icns" if os.path.exists("bt_ota/assets/AesApp.icns") else None

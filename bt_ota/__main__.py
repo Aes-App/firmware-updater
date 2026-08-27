@@ -36,7 +36,7 @@ async def _pick_device(name: str | None, address: str | None, timeout: float):
              "and make sure it is not connected to a phone.")
         return None
     for dev, rssi, nm in cands:
-        _log(f"  {nm or '(no name)':24} {dev.address}  rssi={rssi}")
+        _log(f"  {nm or dev.name or '(no name)':24} {dev.address}  rssi={rssi}")
     if len(cands) > 1 and not name:
         _log("multiple devices; re-run with --name or --address to choose one.")
         return None
@@ -51,7 +51,7 @@ async def cmd_scan(args) -> int:
         return 1
     print(f"{'NAME':26} {'ADDRESS':38} RSSI")
     for dev, rssi, nm in cands:
-        print(f"{(nm or '(no name)'):26} {dev.address:38} {rssi}")
+        print(f"{(nm or dev.name or '(no name)'):26} {dev.address:38} {rssi}")
     return 0
 
 
