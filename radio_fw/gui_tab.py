@@ -98,6 +98,7 @@ class _Row:
         self.result: compiler.CompileResult | None = None
         self.error: str | None = None
         self.paths: list[str] = []
+        self.picked: dict[str, str] = {}   # files gathered by extension (multi-file kinds)
         self._gen = 0   # compile generation; see _pick (stale-compile guard)
 
         frame = ttk.Frame(parent)
@@ -118,24 +119,62 @@ class _Row:
                               command=self._pick)
         self.btn.grid(row=0, column=2, sticky="w", padx=6)
 
-        self.status = ttk.Label(frame, text="not selected", foreground="#666")
-        self.status.grid(row=1, column=1, columnspan=2, sticky="w", padx=(0, 0))
+        # Multi-file kinds (FW/ICON = .CDD + .CDI) need BOTH files. Tell the
+        # operator to Shift/Ctrl-select up front — and picking one at a time
+        # still works (see _pick), so a missed hint doesn't dead-end them.
+        if spec.KINDS[kind]["multi"]:
+            init_status = ("Select the " + " and ".join("." + e.upper() for e in spec.requires(kind))
+                           + " together — hold Shift or Ctrl to pick both (or add them one at a time).")
+            init_color = "#8a6d00"
+        else:
+            init_status, init_color = "not selected", "#666"
+        self.status = ttk.Label(frame, text=init_status, foreground=init_color,
+                                wraplength=520, justify="left")
+        self.status.grid(row=1, column=1, columnspan=2, sticky="w")
 
     def _pick(self):
         multi = spec.KINDS[self.kind]["multi"]
         exts = spec.accepts(self.kind)
+        req_exts = spec.requires(self.kind)
         patterns = " ".join("*." + e for e in exts)
         types = [(spec.label(self.kind) + " files", patterns), ("All files", "*.*")]
         if multi:
-            paths = filedialog.askopenfilenames(title="Choose " + spec.label(self.kind) + " files",
-                                                filetypes=types)
-            paths = list(paths)
+            title = ("Select the " + " and ".join("." + e.upper() for e in req_exts)
+                     + " together — hold Shift or Ctrl to pick more than one")
+            picked = list(filedialog.askopenfilenames(title=title, filetypes=types))
         else:
             p = filedialog.askopenfilename(title="Choose the " + spec.label(self.kind) + " file",
                                            filetypes=types)
-            paths = [p] if p else []
-        if not paths:
+            picked = [p] if p else []
+        if not picked:
             return
+
+        if multi:
+            # Accumulate by extension so picking the files one at a time works
+            # too (each pick adds or replaces its extension). This is the whole
+            # point for operators who don't Shift-select: pick the .CDD, then
+            # the .CDI, and it still completes.
+            for p in picked:
+                ext = os.path.splitext(p)[1].lower().lstrip(".")
+                if ext in exts:
+                    self.picked[ext] = p
+            missing = [e for e in req_exts if e not in self.picked]
+            if missing:
+                have = ", ".join(os.path.basename(v) for v in self.picked.values()) or "nothing yet"
+                self.status.configure(
+                    text="Have " + have + " — still need " + ", ".join("." + e.upper() for e in missing)
+                         + ". Click “Choose files…” again to add it (or hold Shift/Ctrl to pick both at once).",
+                    foreground="#8a6d00")
+                self.checked.set(False)
+                self.cb.state(["disabled"])
+                self.result = None
+                self.error = None
+                self.tab._refresh_start_state()
+                return
+            paths = list(self.picked.values())
+        else:
+            paths = picked
+
         self.paths = paths
         self.status.configure(text="compiling…", foreground="#666")
         self.checked.set(False)
