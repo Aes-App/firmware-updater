@@ -66,26 +66,54 @@ CDI_STRIDE = 278              # 256-byte name + 4 u32 + 6 zero bytes
 CDI_NAME_LEN = 256
 CDI_GRANULARITY = 0x00010000  # 64 KB, constant in every observed entry
 
-#: Per-kind protocol facts. `base` is the first frame's flash address --
-#: 0x0800C000 (MCU code flash, after the bootloader) for fw, 0x00040000
-#: (asset flash) for icon. `span` bounds the whole address range as a sanity
-#: check against a mistagged or corrupt package.
-KIND = {
-    "fw": dict(
-        base=0x0800C000,
-        span=(0x08000000, 0x08400000),
-        max_entries=1,
-        handshake="UPDATE",
-        finish_acked=False,
-    ),
-    "icon": dict(
-        base=0x00040000,
-        span=(0x00000000, 0x08000000),
-        max_entries=None,
-        handshake="PROGRAM",
-        finish_acked=True,
-    ),
+#: Per-MODEL, per-kind protocol facts. The wire protocol (40-byte frame,
+#: checksum, 0x18 finish) is identical across models and kinds -- only these
+#: constants differ, all capture-verified:
+#:   base          the first frame's flash address (MCU code flash for fw,
+#:                 asset flash for icon, the daughterboard for aprs)
+#:   span          bounds the whole address range (sanity vs a mistagged package)
+#:   max_entries   fw/aprs are a single .CDI entry; icon has many
+#:   handshake     "UPDATE" (fw/aprs, with an ident query) or "PROGRAM" (icon)
+#:   ident         the bootloader identity prefix to gate the model on, or None
+#:                 (icon has no ident query); this is the ONE model gate
+#:   finish_acked  whether the radio ACKs the lone 0x18 terminator
+#:
+#: D878UVII targets were byte-matched against the factory captures: all three
+#: (fw @0x08004000/ID878UV2, icon @0x20000/PROGRAM, aprs "LinkBoard"
+#: @0x2000/IA-BORD) reproduce their capture frame-for-frame.
+MODELS = {
+    "d890": {
+        "fw":   dict(base=0x0800C000, span=(0x08000000, 0x08400000), max_entries=1,
+                     handshake="UPDATE", ident="ID890UV", finish_acked=False),
+        "icon": dict(base=0x00040000, span=(0x00000000, 0x08000000), max_entries=None,
+                     handshake="PROGRAM", ident=None, finish_acked=True),
+    },
+    "d878uv2": {
+        "fw":   dict(base=0x08004000, span=(0x08000000, 0x08400000), max_entries=1,
+                     handshake="UPDATE", ident="ID878UV2", finish_acked=False),
+        "icon": dict(base=0x00020000, span=(0x00000000, 0x08000000), max_entries=None,
+                     handshake="PROGRAM", ident=None, finish_acked=True),
+        "aprs": dict(base=0x00002000, span=(0x00000000, 0x00100000), max_entries=1,
+                     handshake="UPDATE", ident="IA-BORD", finish_acked=False),
+    },
 }
+DEFAULT_MODEL = "d890"
+
+# Back-compat alias: bare KIND is the default model's per-kind table.
+KIND = MODELS[DEFAULT_MODEL]
+
+
+def _target(model: str, kind: str) -> dict:
+    """The (model, kind) protocol config, or an UpdateFileError naming what is
+    available."""
+    if model not in MODELS:
+        raise UpdateFileError(
+            f"unknown model {model!r} (have: {', '.join(MODELS)})")
+    kinds = MODELS[model]
+    if kind not in kinds:
+        raise UpdateFileError(
+            f"model {model!r} has no {kind!r} target (have: {', '.join(kinds)})")
+    return kinds[kind]
 
 
 class UpdateFileError(ValueError):
@@ -174,12 +202,12 @@ def parse_spi(spi: bytes) -> Tuple[int, int, int]:
 
 
 def validate_package(kind: str, entries: List[CdiEntry], cdd_len: int,
-                     spi: Optional[bytes]) -> None:
-    """Cross-validate .CDI/.CDD/.spi and the admin's kind tag. Both known
-    packages tile the .CDD exactly (entry i starts where i-1 ends, sum of
+                     spi: Optional[bytes], model: str = DEFAULT_MODEL) -> None:
+    """Cross-validate .CDI/.CDD/.spi and the admin's kind tag. Every known
+    package tiles the .CDD exactly (entry i starts where i-1 ends, sum of
     lengths == file size) with strictly ascending, non-overlapping flash
     ranges; any deviation is an unknown vendor format and a hard error."""
-    k = KIND[kind]
+    k = _target(model, kind)
 
     # --- .CDD tiling ------------------------------------------------------
     expect_foff = 0
@@ -211,12 +239,13 @@ def validate_package(kind: str, entries: List[CdiEntry], cdd_len: int,
             f"entry/entries, got {len(entries)} -- is this actually an "
             f"{'ICON' if kind == 'fw' else 'FW'} package?")
     if entries[0].addr != k["base"]:
+        others = ", ".join(f"{kk} at {kc['base']:#010x}"
+                           for kk, kc in MODELS[model].items())
         raise UpdateFileError(
-            f"--kind {kind} expects the stream to start at {k['base']:#010x}, "
-            f"but the first .CDI entry ({entries[0].name}) loads at "
-            f"{entries[0].addr:#010x} -- wrong file for this kind "
-            f"(fw starts at {KIND['fw']['base']:#010x}, icon at "
-            f"{KIND['icon']['base']:#010x})")
+            f"--kind {kind} ({model}) expects the stream to start at "
+            f"{k['base']:#010x}, but the first .CDI entry ({entries[0].name}) "
+            f"loads at {entries[0].addr:#010x} -- wrong file for this kind "
+            f"({others})")
     lo, hi = k["span"]
     for e in entries:
         if not (lo <= e.addr and e.addr + e.length <= hi):
@@ -264,22 +293,23 @@ def compile_frames(entries: List[CdiEntry], cdd: bytes) -> bytes:
 
 
 def compile_update(kind: str, cdd: bytes, cdi: bytes,
-                   spi: Optional[bytes] = None) -> Tuple[bytes, dict]:
+                   spi: Optional[bytes] = None,
+                   model: str = DEFAULT_MODEL) -> Tuple[bytes, dict]:
     """Validate the package and compile it. Returns (artifact, manifest).
     Raises UpdateFileError before producing any bytes on ANY inconsistency."""
-    if kind not in KIND:
-        raise UpdateFileError(f"unknown kind {kind!r} (fw|icon)")
+    k = _target(model, kind)   # validates (model, kind); raises with what's available
     if not cdd:
         raise UpdateFileError(".CDD is empty")
     entries = parse_cdi(cdi)
-    validate_package(kind, entries, len(cdd), spi)
+    validate_package(kind, entries, len(cdd), spi, model)
     artifact = compile_frames(entries, cdd)
 
-    k = KIND[kind]
     n_frames = len(artifact) // FRAME_LEN
+    ident = k.get("ident")            # bootloader identity prefix, or None (icon)
     manifest = {
         # --- required contract keys (other code depends on these) ---
         "kind": kind,
+        "model": model,
         "frames": n_frames,
         "payload_bytes": sum(e.length for e in entries),
         "wire_bytes": len(artifact),
@@ -287,14 +317,15 @@ def compile_update(kind: str, cdd: bytes, cdi: bytes,
         "addr_first": entries[0].addr,
         "addr_last": entries[-1].addr + (entries[-1].frames - 1) * BLOCK,
         "notes": (
-            f"Concatenated {FRAME_LEN}-byte D890 CPS-bootloader write frames "
+            f"Concatenated {FRAME_LEN}-byte CPS-bootloader write frames "
             f"in send order (01 | u32LE addr | 32 data | u16LE "
             f"sum(frame[1:37]) | 06). Handshake first "
-            f"({k['handshake']!r}; icon MUST get a bare 06 back -- 51 58 06 "
-            f"means codeplug mode, abort), then one frame per 0x06 ACK, then "
-            f"a lone 0x18 ({'ACKed' if k['finish_acked'] else 'not ACKed'}). "
-            f"Short final asset frames are zero-padded; flash gaps between "
-            f"assets are skipped. Byte-matched against the factory capture."
+            f"({k['handshake']!r}; the PROGRAM handshake MUST get a bare 06 "
+            f"back -- 51 58 06 means codeplug mode, abort), then one frame per "
+            f"0x06 ACK, then a lone 0x18 "
+            f"({'ACKed' if k['finish_acked'] else 'not ACKed'}). Short final "
+            f"asset frames are zero-padded; flash gaps between assets are "
+            f"skipped. Byte-matched against the factory capture."
         ),
         # --- protocol facts the WebSerial writer needs ---
         "frame_len": FRAME_LEN,
@@ -303,9 +334,11 @@ def compile_update(kind: str, cdd: bytes, cdi: bytes,
         "pad_byte": PAD_BYTE,
         "handshake_ascii": k["handshake"],
         "handshake_expect_hex": "06",
-        "codeplug_collision_hex": "515806" if kind == "icon" else None,
-        "ident_query_hex": "02" if kind == "fw" else None,
-        "ident_reply_prefix_ascii": "ID890UV" if kind == "fw" else None,
+        # the PROGRAM handshake collides with the codeplug protocol (QX+06);
+        # UPDATE handshakes (fw/aprs) never do.
+        "codeplug_collision_hex": "515806" if k["handshake"] == "PROGRAM" else None,
+        "ident_query_hex": "02" if ident else None,
+        "ident_reply_prefix_ascii": ident,
         "finish_byte_hex": f"{FINISH_BYTE:02x}",
         "finish_acked": k["finish_acked"],
         "serial": {"baud": 921600, "control_line_state": "RTS only (0x0002)"},

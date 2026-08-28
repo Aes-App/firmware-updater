@@ -296,6 +296,9 @@ PROGRESS_EVERY_FRAMES = 64
 CPS_PROFILE = {
     "fw":   {"handshake": "UPDATE",  "ident_query": True,  "finish_acked": False, "label": "main MCU firmware"},
     "icon": {"handshake": "PROGRAM", "ident_query": False, "finish_acked": True,  "label": "icons & fonts"},
+    # D878UVII BT+APRS linked board: same CPS protocol as fw (UPDATE + an ident
+    # query), gated on the "IA-BORD" bootloader identity from the manifest.
+    "aprs": {"handshake": "UPDATE",  "ident_query": True,  "finish_acked": False, "label": "APRS + BT board"},
 }
 
 
@@ -827,7 +830,7 @@ def run(kind: str, port_name: str, artifact, manifest: dict,
     on_log = on_log or (lambda m, c="info": None)
     on_progress = on_progress or (lambda d, t, p: None)
     artifact = bytes(artifact)
-    if kind in ("fw", "icon"):
+    if kind in ("fw", "icon", "aprs"):
         _run_cps(kind, port_name, artifact, manifest, on_log, on_progress, abort,
                  pace_ms=opts.get("pace_ms", 0))
     elif kind == "nr":

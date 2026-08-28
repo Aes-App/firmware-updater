@@ -27,7 +27,7 @@ datas += [("bt_ota/libjl_ota_auth.so", "bt_ota")]
 datas += [("bt_ota/THIRD_PARTY_NOTICES.txt", "bt_ota")]
 # ship branding assets + the radio/boards step photos if present
 for _asset in ("aesapp_logo.png", "aesapp_logo_sm.png", "AesApp_icon.png",
-               "SCT3288.png", "NR.png", "ICON.png", "FW.png"):
+               "SCT3288.png", "NR.png", "ICON.png", "FW.png", "Reset.png"):
     if os.path.exists(f"bt_ota/assets/{_asset}"):
         datas += [(f"bt_ota/assets/{_asset}", "bt_ota/assets")]
 APP_ICON = "bt_ota/assets/AesApp.icns" if os.path.exists("bt_ota/assets/AesApp.icns") else None
@@ -70,8 +70,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": APP_NAME,
         "CFBundleDisplayName": APP_NAME,
-        "CFBundleShortVersionString": "0.5.0",
-        "CFBundleVersion": "0.5.0",
+        "CFBundleShortVersionString": "0.6.0",
+        "CFBundleVersion": "0.6.0",
         "LSMinimumSystemVersion": "11.0",
         "NSHighResolutionCapable": True,
         "NSHumanReadableCopyright": "© AesApp Inc.",

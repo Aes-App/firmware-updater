@@ -125,7 +125,7 @@ class CpsDevice:
     def __init__(self, kind, ident_hex=None, codeplug_mode=False, ack_finish=None,
                  nak_frame=None, drop_ack_at=None):
         self.kind = kind
-        self.hs = b"UPDATE" if kind == "fw" else b"PROGRAM"
+        self.hs = b"PROGRAM" if kind == "icon" else b"UPDATE"   # fw/aprs = UPDATE
         self.ident = bytes.fromhex(ident_hex) if ident_hex else None
         self.codeplug = codeplug_mode
         self.ack_finish = ack_finish if ack_finish is not None else (kind == "icon")
@@ -154,7 +154,7 @@ class CpsDevice:
                     self.state = "dead"
                     return
                 ser.feed(b"\x06")
-                self.state = "ident" if self.kind == "fw" else "frames"
+                self.state = "ident" if self.kind in ("fw", "aprs") else "frames"
             elif self.state == "ident":
                 if len(self.buf) < 1:
                     return
@@ -535,6 +535,18 @@ ICON_MANIFEST = {
 }
 IDENT_D890 = "494438393055560000563130300000" + "06"   # "ID890UV\0\0V100\0\0"+06
 IDENT_D878 = "494438373855560000563130300000" + "06"   # "ID878UV..."
+IDENT_D878UV2 = "494438373855563200563130300000" + "06"   # "ID878UV2\0V100\0\0"+06
+IDENT_IABORD = "49412d424f52440000563230300000" + "06"     # "IA-BORD\0\0V200\0\0"+06
+
+
+def _synth_cps_pkg(base, payload):
+    """A minimal one-entry CPS package (.CDI + .CDD) loading `payload` at `base`.
+    Runs through fwupd_cps.compile_update, so it exercises the real compiler."""
+    import struct
+    name = b"synth.bin".ljust(0x100, b"\x00")
+    cdi = name + struct.pack("<IIII", base, len(payload), 0, 0x10000) + b"\x00" * 6
+    spi = struct.pack("<IHI", 32, 1, len(payload))
+    return payload, cdi, spi
 
 # Reassembled from the frame_index-ordered frames (control frames are exact
 # session/controls literals; the four 30-byte write frames are the capture bytes).
@@ -695,6 +707,59 @@ def run_all():
         assert "515806" in str(e)
         assert len(dev.frames) == 0, "no frames into a codeplug session"
     check("icon codeplug-mode abort", t_icon_codeplug)
+
+    # -- D878UVII: fwupd_cps model params + aprs target ---------------------
+    def t_878_manifests():
+        from radio_fw.vendor import fwupd_cps
+        cases = {
+            "fw":   (0x08004000, "UPDATE",  "ID878UV2", None),
+            "icon": (0x00020000, "PROGRAM", None,       "515806"),
+            "aprs": (0x00002000, "UPDATE",  "IA-BORD",  None),
+        }
+        for kind, (base, hs, ident, collide) in cases.items():
+            cdd, cdi, spi = _synth_cps_pkg(base, bytes(range(64)))
+            _art, m = fwupd_cps.compile_update(kind, cdd, cdi, spi, model="d878uv2")
+            assert m["kind"] == kind and m["model"] == "d878uv2"
+            assert m["base_addr"] == base, (kind, hex(m["base_addr"]))
+            assert m["handshake_ascii"] == hs, (kind, m["handshake_ascii"])
+            assert m["ident_reply_prefix_ascii"] == ident, (kind, m["ident_reply_prefix_ascii"])
+            assert m["ident_query_hex"] == ("02" if ident else None)
+            assert m["codeplug_collision_hex"] == collide, (kind, m["codeplug_collision_hex"])
+        # a D890-base fw package is refused for the d878uv2 fw target (address gate)
+        cdd, cdi, spi = _synth_cps_pkg(0x0800C000, bytes(range(64)))
+        expect_raises(lambda: fwupd_cps.compile_update("fw", cdd, cdi, spi, model="d878uv2"),
+                      "0x08004000")
+    check("878 fwupd_cps model params + address gate", t_878_manifests)
+
+    def t_aprs_engine():
+        # compile a real synthetic aprs package for d878uv2, then flash it against
+        # a device double that speaks UPDATE + the IA-BORD identity.
+        from radio_fw.vendor import fwupd_cps
+        cdd, cdi, spi = _synth_cps_pkg(0x2000, bytes((i * 7) & 0xFF for i in range(96)))
+        artifact, manifest = fwupd_cps.compile_update("aprs", cdd, cdi, spi, model="d878uv2")
+        cap = Cap()
+        dev = CpsDevice("aprs", ident_hex=IDENT_IABORD)
+        fake = _install(None, dev)
+        engines.run("aprs", "COM_FAKE", artifact, manifest,
+                    on_log=cap.on_log, on_progress=cap.on_progress)
+        assert b"".join(dev.frames) == artifact, "aprs frames must be the artifact verbatim"
+        assert not dev.bad_checksum
+        assert dev.finish_byte == 0x18
+        assert fake.signals[0] == (False, True), "CPS = RTS only"
+        assert cap.last_progress[2] == "done"
+    check("aprs engine happy path (UPDATE + IA-BORD gate)", t_aprs_engine)
+
+    def t_aprs_wrong_radio():
+        from radio_fw.vendor import fwupd_cps
+        cdd, cdi, spi = _synth_cps_pkg(0x2000, bytes(range(64)))
+        artifact, manifest = fwupd_cps.compile_update("aprs", cdd, cdi, spi, model="d878uv2")
+        dev = CpsDevice("aprs", ident_hex=IDENT_D890)   # wrong board answers ID890UV
+        _install(None, dev)
+        expect_raises(lambda: engines.run("aprs", "COM_FAKE", artifact, manifest,
+                                          on_log=lambda *a: None, on_progress=lambda *a: None),
+                      "WRONG RADIO")
+        assert len(dev.frames) == 0
+    check("aprs wrong-radio abort (ident gate)", t_aprs_wrong_radio)
 
     # -- SCT happy path + wrong ACK -----------------------------------------
     def t_sct_happy():

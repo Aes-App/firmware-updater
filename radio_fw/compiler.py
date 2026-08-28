@@ -87,10 +87,11 @@ def _read(path: str) -> bytes:
         raise CompileError('Cannot read "' + os.path.basename(path) + '": ' + str(e))
 
 
-def compile_files(kind: str, paths: list[str]) -> CompileResult:
-    """Compile one component from picked vendor files. Raises CompileError with
-    a verbatim, display-ready message on any rejection."""
-    if kind not in spec.KINDS:
+def compile_files(kind: str, paths: list[str], model: str = "d890") -> CompileResult:
+    """Compile one component from picked vendor files. `model` is the desktop
+    radio (its CPS targets are compiled for that model's addresses/ident). Raises
+    CompileError with a verbatim, display-ready message on any rejection."""
+    if kind not in spec.KIND_FILESPEC:
         raise CompileError('Unknown update kind "' + str(kind) + '".')
     files = _by_extension(kind, paths)
     source_names = [os.path.basename(p) for p in files.values()]
@@ -103,11 +104,12 @@ def compile_files(kind: str, paths: list[str]) -> CompileResult:
             ufw = _read(files["ufw"])
             manifest = fwupd_nr.build_manifest(ufw)
             artifact = ufw   # the artifact IS the .ufw, served verbatim
-        elif kind in (spec.KIND_ICON, spec.KIND_FW):
+        elif kind in spec.CPS_KINDS:      # fw / icon / aprs — the CPS protocol
             cdd = _read(files["cdd"])
             cdi = _read(files["cdi"])
             spi = _read(files["spi"]) if "spi" in files else None
-            artifact, manifest = fwupd_cps.compile_update(kind, cdd, cdi, spi)
+            artifact, manifest = fwupd_cps.compile_update(
+                kind, cdd, cdi, spi, model=spec.cps_model(model))
         else:  # pragma: no cover - guarded above
             raise CompileError('Unknown update kind "' + str(kind) + '".')
     except (fwupd_cps.UpdateFileError, fwupd_nr.UfwError, fwupd_sct.SctHexError) as e:

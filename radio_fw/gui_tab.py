@@ -1,14 +1,15 @@
 """The "Radio and Boards Updates" tab: a guided, one-target-at-a-time wizard for
-flashing the D890's four update targets (SCT3288 baseband, NR board, icons &
-fonts, main radio firmware) over a serial cable.
+flashing a radio's update targets over a serial cable. A model radio button
+chooses the radio; the target rows follow that model (D890UV: radio firmware,
+icons, SCT3288, NR board; D878UVII: radio firmware, icons, APRS+BT board).
 
 Mirrors the operator flow of the AesApp web CPS's admin firmware pages in the
-desktop app: the operator picks the vendor files for the targets to
-update (compiled + hard-validated locally by radio_fw.compiler), then the wizard
-walks the targets in WRITE_ORDER (main firmware LAST, so a mid-batch failure
-leaves the radio bootable). Each step shows how to put the radio into that update
-mode plus a photo of the buttons, waits for the operator, asks for the COM port,
-and streams the precompiled wire data (radio_fw.engines).
+desktop app: the operator picks the vendor files for the targets to update
+(compiled + hard-validated locally by radio_fw.compiler for the chosen model),
+then the wizard walks them in the model's order (radio firmware first). Each step
+shows how to put the radio into that update mode plus a photo of the buttons,
+waits for the operator, asks for the COM port, and streams the precompiled wire
+data (radio_fw.engines).
 
 THESE WRITES ARE NOT VERIFIED and an interrupted write can brick a radio — the
 same warnings the web page carries are enforced here (a confirm gate before the
@@ -21,6 +22,7 @@ import os
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
@@ -89,6 +91,25 @@ def _load_step_image(name: str) -> tk.PhotoImage | None:
     return img
 
 
+def _resolve_cps_siblings(spi_path: str) -> dict[str, str]:
+    """The .CDD / .CDI that share a .spi's base filename in the same folder —
+    how the factory CPS finds them from the selected .spi. Case-insensitive on
+    the extension; returns {"cdd": path, "cdi": path} for whatever is present."""
+    out: dict[str, str] = {}
+    folder = os.path.dirname(spi_path)
+    base = os.path.splitext(os.path.basename(spi_path))[0]
+    try:
+        names = os.listdir(folder or ".")
+    except OSError:
+        return out
+    for fn in names:
+        stem, ext = os.path.splitext(fn)
+        e = ext.lower().lstrip(".")
+        if e in ("cdd", "cdi") and stem == base:
+            out[e] = os.path.join(folder, fn)
+    return out
+
+
 class _Row:
     """One target's row in the setup view: checkbox + file picker + status."""
 
@@ -112,37 +133,38 @@ class _Row:
 
         ttk.Label(frame, text=str(index) + ". " + spec.label(kind), width=20).grid(row=0, column=1, sticky="w")
 
-        req = ", ".join("." + e.upper() for e in spec.requires(kind))
-        opt = [e for e in spec.accepts(kind) if e not in spec.requires(kind)]
-        hint = req + (" (+ optional ." + ", .".join(e.upper() for e in opt) + ")" if opt else "")
-        self.btn = ttk.Button(frame, text="Choose files… (" + hint + ")",
-                              command=self._pick)
-        self.btn.grid(row=0, column=2, sticky="w", padx=6)
-
-        # Multi-file kinds (FW/ICON = .CDD + .CDI) need BOTH files. Tell the
-        # operator to Shift/Ctrl-select up front — and picking one at a time
-        # still works (see _pick), so a missed hint doesn't dead-end them.
-        if spec.KINDS[kind]["multi"]:
-            init_status = ("Select the " + " and ".join("." + e.upper() for e in spec.requires(kind))
-                           + " together — hold Shift or Ctrl to pick both (or add them one at a time).")
+        # CPS kinds (fw/icon/aprs) are a .spi + sibling .CDD/.CDI in one folder;
+        # like the factory CPS, the operator picks just the .spi and the .CDD/.CDI
+        # load automatically. Single-file kinds (sct/nr) name their one extension.
+        if spec.is_multi(kind):
+            btn_text = "Choose .spi file…"
+            init_status = ("Pick the .spi update file — the .CDD and .CDI load automatically from "
+                           "the same folder. (No .spi? Shift-select the .CDD and .CDI instead.)")
             init_color = "#8a6d00"
         else:
+            btn_text = "Choose file… (." + (spec.requires(kind)[0].upper() if spec.requires(kind) else "?") + ")"
             init_status, init_color = "not selected", "#666"
+        self.btn = ttk.Button(frame, text=btn_text, command=self._pick)
+        self.btn.grid(row=0, column=2, sticky="w", padx=6)
+
         self.status = ttk.Label(frame, text=init_status, foreground=init_color,
                                 wraplength=520, justify="left")
         self.status.grid(row=1, column=1, columnspan=2, sticky="w")
 
     def _pick(self):
-        multi = spec.KINDS[self.kind]["multi"]
-        exts = spec.accepts(self.kind)
-        req_exts = spec.requires(self.kind)
+        multi = spec.is_multi(self.kind)
+        exts = spec.accepts(self.kind)         # cps: [cdd, cdi, spi]
+        req_exts = spec.requires(self.kind)    # cps: [cdd, cdi]
         patterns = " ".join("*." + e for e in exts)
-        types = [(spec.label(self.kind) + " files", patterns), ("All files", "*.*")]
         if multi:
-            title = ("Select the " + " and ".join("." + e.upper() for e in req_exts)
-                     + " together — hold Shift or Ctrl to pick more than one")
+            types = [("Update package (.spi)", "*.spi"),
+                     (spec.label(self.kind) + " files (." + " .".join(e.upper() for e in exts) + ")", patterns),
+                     ("All files", "*.*")]
+            title = ("Select the .spi file — the .CDD and .CDI load automatically from the same "
+                     "folder (or Shift-select the .CDD and .CDI yourself)")
             picked = list(filedialog.askopenfilenames(title=title, filetypes=types))
         else:
+            types = [(spec.label(self.kind) + " files", patterns), ("All files", "*.*")]
             p = filedialog.askopenfilename(title="Choose the " + spec.label(self.kind) + " file",
                                            filetypes=types)
             picked = [p] if p else []
@@ -150,21 +172,26 @@ class _Row:
             return
 
         if multi:
-            # Accumulate by extension so picking the files one at a time works
-            # too (each pick adds or replaces its extension). This is the whole
-            # point for operators who don't Shift-select: pick the .CDD, then
-            # the .CDI, and it still completes.
-            for p in picked:
-                ext = os.path.splitext(p)[1].lower().lstrip(".")
-                if ext in exts:
-                    self.picked[ext] = p
+            new = {os.path.splitext(p)[1].lower().lstrip("."): p for p in picked
+                   if os.path.splitext(p)[1].lower().lstrip(".") in exts}
+            if "spi" in new:
+                # The .spi is the authoritative entry point (like the factory CPS):
+                # reset to it and auto-load the sibling .CDD/.CDI from its folder.
+                self.picked = {"spi": new["spi"], **_resolve_cps_siblings(new["spi"])}
+            else:
+                # No .spi — manual fallback: accumulate the .CDD/.CDI as they come.
+                self.picked.update(new)
             missing = [e for e in req_exts if e not in self.picked]
             if missing:
                 have = ", ".join(os.path.basename(v) for v in self.picked.values()) or "nothing yet"
-                self.status.configure(
-                    text="Have " + have + " — still need " + ", ".join("." + e.upper() for e in missing)
-                         + ". Click “Choose files…” again to add it (or hold Shift/Ctrl to pick both at once).",
-                    foreground="#8a6d00")
+                miss = ", ".join("." + e.upper() for e in missing)
+                if "spi" in self.picked:
+                    tip = (" — but the " + miss + " isn't next to it in that folder. Shift-select the "
+                           + miss + " yourself.")
+                else:
+                    tip = ". Click “Choose .spi file…” again to add it (or Shift-select both)."
+                self.status.configure(text="Have " + have + " — still need " + miss + tip,
+                                      foreground="#8a6d00")
                 self.checked.set(False)
                 self.cb.state(["disabled"])
                 self.result = None
@@ -187,11 +214,12 @@ class _Row:
         # dropped rather than overwriting the newer selection.
         self._gen += 1
         gen = self._gen
-        threading.Thread(target=self._compile_worker, args=(self.kind, paths, gen), daemon=True).start()
+        model = self.tab.model   # capture: the model in effect when this pick was made
+        threading.Thread(target=self._compile_worker, args=(self.kind, paths, gen, model), daemon=True).start()
 
-    def _compile_worker(self, kind, paths, gen):
+    def _compile_worker(self, kind, paths, gen, model):
         try:
-            res = compiler.compile_files(kind, paths)
+            res = compiler.compile_files(kind, paths, model)
             self.tab._post("compiled", (self, res, None, gen))
         except compiler.CompileError as e:
             self.tab._post("compiled", (self, None, str(e), gen))
@@ -228,6 +256,8 @@ class RadioBoardsTab:
         self.parent = parent
         self.root = root
         self._q: "queue.Queue[tuple]" = queue.Queue()
+        self.model = spec.DEFAULT_MODEL
+        self.model_var = tk.StringVar(value=self.model)
         self.rows: list[_Row] = []
         self.plan: list[compiler.CompileResult] = []
         self.step = 0
@@ -257,7 +287,9 @@ class RadioBoardsTab:
     def _handle(self, kind, payload):
         if kind == "compiled":
             row, res, err, gen = payload
-            if gen == row._gen:   # drop a stale compile that a re-pick superseded
+            # drop a stale compile: a re-pick superseded it, or a model switch
+            # destroyed the row.
+            if gen == row._gen and row in self.rows:
                 row.apply_compile(res, err)
         elif kind == "log":
             msg, cls = payload
@@ -274,25 +306,48 @@ class RadioBoardsTab:
             msg, aborted = payload
             self._on_stage_error(msg, aborted)
 
+    # ---- model + rows -------------------------------------------------------
+    def _build_rows(self):
+        """(Re)build the target rows for the current model, in its write order."""
+        for w in self.rows_box.winfo_children():
+            w.destroy()
+        self.rows = []
+        for i, kind in enumerate(spec.model_order(self.model), start=1):
+            self.rows.append(_Row(self, self.rows_box, kind, i))
+
+    def _on_model_change(self):
+        if self._writing:
+            return
+        self.model = self.model_var.get()
+        self._build_rows()
+        self.confirm.set(False)
+        self._refresh_start_state()
+
     # ---- build the views ----------------------------------------------------
     def _build(self):
         outer = ttk.Frame(self.parent)
         outer.pack(fill="both", expand=True, padx=10, pady=8)
 
-        # These board/firmware updates are D890-only — no model choice here
-        # (unlike the Bluetooth tab). Show the model so nobody points a D890
-        # package at another radio.
+        # Radio model chooser — the targets below are per model, and each model's
+        # CPS packages are compiled for that radio's own addresses/identity, so
+        # picking the wrong model is refused at compile time.
         model_row = ttk.Frame(outer)
         model_row.pack(fill="x", pady=(0, 6))
         ttk.Label(model_row, text="Radio model:", font=("", 11, "bold")).pack(side="left")
-        ttk.Label(model_row, text=spec.SUPPORTED_MODEL, font=("", 11)).pack(side="left", padx=(6, 0))
+        self._model_btns = []
+        for m in spec.MODEL_ORDER:
+            rb = ttk.Radiobutton(model_row, text=spec.model_label(m), value=m,
+                                 variable=self.model_var, command=self._on_model_change)
+            rb.pack(side="left", padx=(8, 0))
+            self._model_btns.append(rb)
 
         banner = ttk.Label(
             outer, justify="left", foreground="#7a1020", wraplength=640,
             text=("These are NOT codeplugs. They replace the radio's main firmware, its baseband DSP, "
-                  "its NR daughterboard, or its icon/font flash. Nothing here is verified or read back — "
-                  "an interrupted write can leave a radio that will not boot. Keep the radio powered and "
-                  "the cable in for the whole update, and only load files built for your exact model."))
+                  "its NR/APRS daughterboard, or its icon/font flash. Nothing here is verified or read "
+                  "back — an interrupted write can leave a radio that will not boot. Keep the radio "
+                  "powered and the cable in for the whole update, and only load files built for your "
+                  "exact model."))
         banner.pack(fill="x", pady=(0, 8))
 
         # --- setup view ---
@@ -302,13 +357,12 @@ class RadioBoardsTab:
         ttk.Label(self.setup, justify="left", foreground="#444", wraplength=640,
                   text=("Pick the vendor files for each target you want to write. Each package is compiled "
                         "and checked here before anything is sent. Targets are written in the order shown "
-                        "(main firmware last) — you can skip any, but not reorder them.")
+                        "(radio firmware first) — you can skip any, but not reorder them.")
                   ).pack(anchor="w", pady=(0, 6))
 
-        rows_box = ttk.Frame(self.setup)
-        rows_box.pack(fill="x")
-        for i, kind in enumerate(spec.WRITE_ORDER, start=1):
-            self.rows.append(_Row(self, rows_box, kind, i))
+        self.rows_box = ttk.Frame(self.setup)
+        self.rows_box.pack(fill="x")
+        self._build_rows()
 
         ttk.Separator(self.setup).pack(fill="x", pady=8)
         self.confirm = tk.BooleanVar(value=False)
@@ -372,7 +426,17 @@ class RadioBoardsTab:
         ttk.Label(self.done, text="Radio finished", font=("", 13, "bold")).pack(anchor="w")
         self.done_summary = ttk.Frame(self.done)
         self.done_summary.pack(fill="x", pady=6)
-        again = ttk.Frame(self.done)
+        # Shown only when Radio Firmware was written this batch (see _finish_radio).
+        self.mcu_box = ttk.LabelFrame(self.done, text="Reset the MCU now (Radio Firmware was written)")
+        _mcu_body = ttk.Frame(self.mcu_box)
+        _mcu_body.pack(fill="x", padx=8, pady=6)
+        self._mcu_img = _load_step_image("Reset.png")   # keep a ref so Tk doesn't GC it
+        ttk.Label(_mcu_body, image=self._mcu_img if self._mcu_img else "").pack(
+            side="left", anchor="n", padx=(0, 12))
+        self.mcu_reset_lbl = ttk.Label(_mcu_body, justify="left", wraplength=420,
+                                       foreground="#7a1020", font=("", 11))
+        self.mcu_reset_lbl.pack(side="left", anchor="n", fill="x", expand=True)
+        again = self._again_frame = ttk.Frame(self.done)
         again.pack(fill="x")
         ttk.Button(again, text="Update another radio (same selection)", command=self._again).pack(side="left")
         ttk.Button(again, text="Back to setup", command=self._back_to_setup).pack(side="left", padx=8)
@@ -383,6 +447,15 @@ class RadioBoardsTab:
         ok = self.confirm.get() and any_ready
         self.start_btn.state(["!disabled"] if ok else ["disabled"])
 
+    def _lock_model(self, locked: bool):
+        """Lock/unlock the model radio buttons — locked while a batch is in
+        progress so the model can't change under an in-flight plan."""
+        for rb in getattr(self, "_model_btns", []):
+            rb.state(["disabled"] if locked else ["!disabled"])
+
+    def _plan_has_fw(self) -> bool:
+        return any(p.kind == spec.KIND_FW for p in self.plan)
+
     def _start(self):
         self.plan = [r.result for r in self.rows if r.ready]
         if not self.plan:
@@ -391,6 +464,18 @@ class RadioBoardsTab:
         self._begin_radio()
 
     def _begin_radio(self):
+        # Radio Firmware can reset the radio's settings, so require a codeplug
+        # backup first — every radio, including "flash another". The board/asset
+        # updates (icon/BT/NR/SCT) don't touch the codeplug, so this only fires
+        # when Radio Firmware is in the batch.
+        if self._plan_has_fw():
+            if not messagebox.askyesno(
+                    "Back up your codeplug first",
+                    "This batch writes the Radio Firmware, which can reset the radio's settings.\n\n"
+                    "Read the codeplug from THIS radio and save it to your PC before continuing.\n\n"
+                    "Is this radio's codeplug backed up?"):
+                return
+        self._lock_model(True)   # no model change once a batch is under way
         self.step = 0
         self.results = [{"kind": p.kind, "label": spec.label(p.kind), "state": "pending"} for p in self.plan]
         self._clear_log()
@@ -408,11 +493,11 @@ class RadioBoardsTab:
         kind = comp.kind
         self.wtitle.configure(text=spec.label(kind))
         self.wcount.configure(text="step " + str(self.step + 1) + " of " + str(len(self.plan)))
-        instr = spec.ENTRY_INSTRUCTIONS.get(kind, "")
+        instr = spec.entry_instructions(self.model, kind)
         if kind in spec.UNCONFIRMED:
             instr = "⚠ Entry combo not yet confirmed — verify before continuing.\n\n" + instr
         self.winstr.configure(text=instr)
-        self._step_img = _load_step_image(spec.KINDS[kind]["image"])
+        self._step_img = _load_step_image(spec.image(kind))
         self.wimage.configure(image=self._step_img if self._step_img else "")
 
         # reset controls to the "instructions" state
@@ -573,13 +658,22 @@ class RadioBoardsTab:
             color = {"done": "#127a2e", "failed": "#b00020", "aborted": "#b00020",
                      "skipped": "#666"}.get(r["state"], "#444")
             ttk.Label(self.done_summary, text=r["label"] + " — " + r["state"], foreground=color).pack(anchor="w")
+        # Whenever Radio Firmware was written, the MCU must be reset — show how.
+        fw_done = any(r["kind"] == spec.KIND_FW and r["state"] == "done" for r in self.results)
+        if fw_done:
+            self.mcu_reset_lbl.configure(text=spec.mcu_reset(self.model))
+            self.mcu_box.pack(fill="x", pady=(4, 8), before=self._again_frame)
+        else:
+            self.mcu_box.pack_forget()
         self.done.pack(fill="both", expand=True)
 
     def _again(self):
-        self.done.pack_forget()
+        # _begin_radio does the codeplug prompt + view switch; don't hide the done
+        # view first, or a declined prompt would leave a blank tab.
         self._begin_radio()
 
     def _back_to_setup(self):
+        self._lock_model(False)   # back on setup — model can change again
         self.confirm.set(False)
         self.start_btn.state(["disabled"])
         self.done.pack_forget()
@@ -588,9 +682,14 @@ class RadioBoardsTab:
 
     # ---- log helpers --------------------------------------------------------
     def _log(self, msg, cls="info"):
+        # Prefix every line with [time] [model] [step] so a saved/scrolled log is
+        # self-describing: [10:23:45] [D890UV] [Icons & Fonts] TX ...
+        step = (spec.label(self.plan[self.step].kind)
+                if self.plan and 0 <= self.step < len(self.plan) else "—")
+        line = "[" + time.strftime("%H:%M:%S") + "] [" + spec.model_label(self.model) + "] [" + step + "] " + msg
         self.log.configure(state="normal")
         tag = cls if cls in _LOG_TAGS else ""
-        self.log.insert("end", msg + "\n", (tag,) if tag else ())
+        self.log.insert("end", line + "\n", (tag,) if tag else ())
         self.log.see("end")
         self.log.configure(state="disabled")
 

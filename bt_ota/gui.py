@@ -24,7 +24,7 @@ from .client import MODELS, firmware_kind, make_client, scan_devices
 APP_TITLE = "AesApp Radio Updater"
 VENDOR = "AesApp Inc."
 WEBSITE = "https://aes.app/"
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 LOG_PREFIX = "[aesapp]"
 
 DISCLAIMER_VERSION = "3"
@@ -609,15 +609,20 @@ def _diag() -> int:
     from serial.tools import list_ports  # noqa: F401
     from radio_fw import engines, compiler, spec  # noqa: F401
     from radio_fw.gui_tab import _asset_path as _rf_asset
-    missing = [spec.KINDS[k]["image"] for k in spec.WRITE_ORDER
-               if not os.path.exists(_rf_asset(spec.KINDS[k]["image"]))]
+    images = sorted({spec.image(k) for k in spec.KIND_FILESPEC} | {"Reset.png"})
+    missing = [img for img in images if not os.path.exists(_rf_asset(img))]
     if missing:
         print(f"DIAG FAIL: step images not found in the bundle: {missing}")
         return 1
     # prove the NR frame grammar agrees end to end (engine <-> vendored precompiler)
     assert engines.NR_LEN_NOTIFY_REPLY.hex() == "aa55010003e7a2"
+    # prove the 878 CPS model + aprs target are wired (byte-match is in the tests)
+    from radio_fw.vendor import fwupd_cps
+    assert fwupd_cps.MODELS["d878uv2"]["aprs"]["ident"] == "IA-BORD"
+    assert "aprs" in engines.CPS_PROFILE
     print(f"DIAG OK: BT tab (bleak+so, auth sample={out.hex()}); "
-          f"Radio tab (pyserial {serial.VERSION}, precompilers, {len(spec.WRITE_ORDER)} step photos)")
+          f"Radio tab (pyserial {serial.VERSION}, precompilers, {len(images)} step photos, "
+          f"models {'/'.join(spec.model_label(m) for m in spec.MODEL_ORDER)})")
     return 0
 
 
