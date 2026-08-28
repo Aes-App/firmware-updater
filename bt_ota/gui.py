@@ -24,8 +24,16 @@ from .client import MODELS, firmware_kind, make_client, scan_devices
 APP_TITLE = "AesApp Radio Updater"
 VENDOR = "AesApp Inc."
 WEBSITE = "https://aes.app/"
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 LOG_PREFIX = "[aesapp]"
+
+# Report this version to the firmware server on its API queries (User-Agent + a
+# ?v= on the catalog request) so it shows in the web log; best-effort.
+try:
+    from radio_fw import download as _rf_download
+    _rf_download.APP_VERSION = VERSION
+except Exception:  # noqa: BLE001
+    pass
 
 DISCLAIMER_VERSION = "3"
 DISCLAIMER = (

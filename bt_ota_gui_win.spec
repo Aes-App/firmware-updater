@@ -14,7 +14,8 @@ datas, binaries, hiddenimports = [], [], []
 # NB: unicorn is deliberately NOT bundled on Windows. The JieLi auth now runs in
 # pure Python (bt_ota._jl_e1); unicorn's JIT/memory setup access-violates inside a
 # frozen app on hardened Windows. It stays an optional dev/mac dep for validate_ufw.
-for pkg in ("bleak", "serial"):   # serial = pyserial, for the radio/boards tab
+for pkg in ("bleak", "serial",   # serial = pyserial, for the radio/boards tab
+            "certifi"):          # CA bundle for radio_fw.download's HTTPS fetch
     d, b, h = collect_all(pkg)
     datas += d; binaries += b; hiddenimports += h
 
@@ -51,9 +52,12 @@ hiddenimports += ["bt_ota", "bt_ota.gui", "bt_ota.ota", "bt_ota.rcsp",
 # radio/boards firmware tab (lazily imported in bt_ota.gui.main) + its vendored
 # stdlib-only precompilers + pyserial's Windows port enumerator.
 hiddenimports += ["radio_fw", "radio_fw.gui_tab", "radio_fw.engines", "radio_fw.compiler",
-                  "radio_fw.spec", "radio_fw.vendor", "radio_fw.vendor.fwupd_cps",
-                  "radio_fw.vendor.fwupd_nr", "radio_fw.vendor.fwupd_sct",
-                  "serial.tools.list_ports", "serial.tools.list_ports_windows"]
+                  "radio_fw.spec", "radio_fw.download", "radio_fw.vendor",
+                  "radio_fw.vendor.fwupd_cps", "radio_fw.vendor.fwupd_nr",
+                  "radio_fw.vendor.fwupd_sct", "serial.tools.list_ports",
+                  "serial.tools.list_ports_windows",
+                  # radio_fw.download's stdlib HTTPS stack + the CA bundle:
+                  "ssl", "json", "urllib.request", "urllib.error", "certifi"]
 
 ICON = "bt_ota/assets/AesApp.ico" if os.path.exists("bt_ota/assets/AesApp.ico") else None
 

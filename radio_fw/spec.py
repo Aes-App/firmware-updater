@@ -116,7 +116,14 @@ MODELS = {
         },
     },
     "d878uv2": {
-        "label": "D878UVII",
+        # The D878UV (Gen 1) and D878UVII (Gen 2) are the same radio one hardware
+        # generation apart: identical update targets and addresses, differing only
+        # in the fw ident (and Gen 1 has no APRS board). One tab covers both; the
+        # generation is a per-firmware detail, not a separate radio. For LOCAL
+        # files the fw generation is auto-detected from the package (compiler.py);
+        # for the SERVER source each catalogued version already carries its
+        # generation.
+        "label": "D878 Series (Gen 1 & 2)",
         "cps_model": "d878uv2",
         "order": [KIND_FW, KIND_ICON, KIND_APRS],
         "instructions": {
@@ -126,6 +133,44 @@ MODELS = {
 }
 DEFAULT_MODEL = "d890"
 MODEL_ORDER = ["d890", "d878uv2"]   # display order of the radio buttons
+
+# Which server-catalogue radio models (the fwupd_cps ids, RadioModelConfig minus
+# the "anytone_" prefix) a desktop tab may fetch prebuilt bundles for. The D878
+# tab spans both generations; D890 is itself. Used only by the "download from
+# server" source, and labelled with a human generation tag in the version list.
+SERVER_MODELS = {
+    "d890": ["d890"],
+    "d878uv2": ["d878uv", "d878uv2"],
+}
+SERVER_MODEL_TAG = {
+    "d890": "",
+    "d878uv": "Gen 1",
+    "d878uv2": "Gen 2",
+}
+# Short radio name used in the version dropdown when a bundle has no custom label
+# (e.g. "D878UV 4.01a" / "D878UVII 4.01a"). The name carries the generation, so no
+# separate tag is needed alongside it.
+SERVER_MODEL_NAME = {
+    "d890": "D890UV",
+    "d878uv": "D878UV",
+    "d878uv2": "D878UVII",
+}
+
+
+def server_model_name(catalog_model: str) -> str:
+    """A short radio name for a catalogue model id, e.g. 'D878UV'."""
+    return SERVER_MODEL_NAME.get(catalog_model, catalog_model)
+
+
+def server_models(model: str) -> list[str]:
+    """The catalogue model ids a desktop tab can fetch (see SERVER_MODELS)."""
+    return list(SERVER_MODELS.get(model, [model]))
+
+
+def server_model_tag(catalog_model: str) -> str:
+    """A short generation tag for a catalogue model id, e.g. 'Gen 1' ('' when a
+    tag would only add noise)."""
+    return SERVER_MODEL_TAG.get(catalog_model, "")
 
 
 def model_label(model: str) -> str:

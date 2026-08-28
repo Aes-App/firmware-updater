@@ -12,7 +12,8 @@ APP_NAME = "AesApp Radio Updater"
 datas, binaries, hiddenimports = [], [], []
 # bleak (BLE) + unicorn (auth emulator) + the pyobjc frameworks bleak uses on macOS
 # + pyserial (the radio/boards firmware tab talks to the CDC-ACM port)
-for pkg in ("bleak", "unicorn", "CoreBluetooth", "Foundation", "libdispatch", "objc", "serial"):
+for pkg in ("bleak", "unicorn", "CoreBluetooth", "Foundation", "libdispatch", "objc", "serial",
+            "certifi"):   # certifi ships the CA bundle radio_fw.download needs in a frozen app
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -37,9 +38,12 @@ hiddenimports += ["bt_ota", "bt_ota.gui", "bt_ota.ota", "bt_ota.rcsp", "bt_ota.j
 # radio/boards firmware tab (lazily imported in bt_ota.gui.main, so name it here)
 # + its vendored, stdlib-only precompilers, + pyserial's port enumerator.
 hiddenimports += ["radio_fw", "radio_fw.gui_tab", "radio_fw.engines", "radio_fw.compiler",
-                  "radio_fw.spec", "radio_fw.vendor", "radio_fw.vendor.fwupd_cps",
-                  "radio_fw.vendor.fwupd_nr", "radio_fw.vendor.fwupd_sct",
-                  "serial.tools.list_ports"]
+                  "radio_fw.spec", "radio_fw.download", "radio_fw.vendor",
+                  "radio_fw.vendor.fwupd_cps", "radio_fw.vendor.fwupd_nr",
+                  "radio_fw.vendor.fwupd_sct", "serial.tools.list_ports",
+                  # radio_fw.download's stdlib HTTPS stack (named so a minimal
+                  # build can't drop them):
+                  "ssl", "json", "urllib.request", "urllib.error", "certifi"]
 
 a = Analysis(
     ["bt_ota_gui.py"],
@@ -70,8 +74,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": APP_NAME,
         "CFBundleDisplayName": APP_NAME,
-        "CFBundleShortVersionString": "0.6.0",
-        "CFBundleVersion": "0.6.0",
+        "CFBundleShortVersionString": "0.7.0",
+        "CFBundleVersion": "0.7.0",
         "LSMinimumSystemVersion": "11.0",
         "NSHighResolutionCapable": True,
         "NSHumanReadableCopyright": "© AesApp Inc.",

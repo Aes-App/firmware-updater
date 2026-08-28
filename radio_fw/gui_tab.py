@@ -24,11 +24,12 @@ import sys
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from serial.tools import list_ports
 
-from . import compiler, engines, spec
+from . import compiler, download, engines, spec
 
 _LOG_TAGS = {"tx": "#0b5fff", "rx": "#7a3fb0", "ok": "#127a2e", "er": "#b00020", "error": "#b00020"}
 
@@ -231,9 +232,13 @@ class _Row:
         self.error = error
         if res is not None:
             names = ", ".join(res.source_names)
+            # A short sha256 (git-style) so a fetched/compiled artifact can be
+            # eyeballed against the catalog or another machine.
+            sha = (res.sha256 or "")[:10]
             self.status.configure(
                 text="✓ " + names + " — " + format(res.frames, ",") + " frames, "
-                     + format(res.payload_bytes, ",") + " payload bytes",
+                     + format(res.payload_bytes, ",") + " payload bytes"
+                     + (" · sha " + sha if sha else ""),
                 foreground="#127a2e")
             self.checked.set(True)
             self.cb.state(["!disabled"])
@@ -247,6 +252,37 @@ class _Row:
     def ready(self) -> bool:
         return self.result is not None and self.checked.get()
 
+    # ---- source switching (local files vs server download) -----------------
+    def enable_local_pick(self, enabled: bool):
+        """Show/hide the local file picker for this row. Disabled in server mode,
+        where rows are filled by a downloaded bundle rather than picked files."""
+        try:
+            self.btn.state(["!disabled"] if enabled else ["disabled"])
+        except tk.TclError:
+            pass
+
+    def note(self, text: str, color: str = "#666"):
+        self.status.configure(text=text, foreground=color)
+
+    def reset_selection(self):
+        """Forget any picked/downloaded package — a source or model switch
+        invalidates whatever was chosen for this row."""
+        self.result = None
+        self.error = None
+        self.paths = []
+        self.picked = {}
+        self._gen += 1          # supersede any in-flight compile/download
+        self.checked.set(False)
+        self.cb.state(["disabled"])
+
+    def begin_download(self):
+        """Mark the row as downloading (status only)."""
+        self.note("downloading… 0%", "#666")
+        self.checked.set(False)
+        self.cb.state(["disabled"])
+        self.result = None
+        self.error = None
+
 
 class RadioBoardsTab:
     """Builds the whole tab inside `parent` (a Notebook page frame). `root` is
@@ -258,6 +294,16 @@ class RadioBoardsTab:
         self._q: "queue.Queue[tuple]" = queue.Queue()
         self.model = spec.DEFAULT_MODEL
         self.model_var = tk.StringVar(value=self.model)
+        # Source of the update files: "local" (operator picks vendor files) or
+        # "server" (download a prebuilt, sha256-verified bundle from AesApp).
+        self.source_var = tk.StringVar(value="local")
+        self._catalog: list[dict] = []      # last fetched catalog bundles
+        self._catalog_loaded = False
+        self._catalog_loading = False
+        self._version_map: dict[str, dict] = {}   # dropdown label -> bundle dict
+        self._fetch_token = 0               # supersede a superseded bundle fetch
+        self._dl_pending = 0                # components still downloading this fetch
+        self._fetched_label = None          # the version the rows were last fetched for
         self.rows: list[_Row] = []
         self.plan: list[compiler.CompileResult] = []
         self.step = 0
@@ -305,6 +351,33 @@ class RadioBoardsTab:
         elif kind == "stage_error":
             msg, aborted = payload
             self._on_stage_error(msg, aborted)
+        elif kind == "catalog_ok":
+            self._catalog = payload or []
+            self._catalog_loaded = True
+            self._catalog_loading = False
+            self._populate_versions()
+        elif kind == "catalog_err":
+            self._catalog_loading = False
+            self.fetch_btn.state(["disabled"])
+            self.server_status.configure(
+                text=str(payload) + "  (Click “Refresh list” to try again.)", foreground="#b00020")
+        elif kind == "catalog_status":
+            # a retry/backoff countdown while loading the catalog
+            self.server_status.configure(text=str(payload), foreground="#8a6d00")
+        elif kind == "dl_status":
+            row, gen, msg = payload
+            if gen == row._gen and row in self.rows and row.result is None:
+                row.note(str(msg), "#8a6d00")
+        elif kind == "dl_progress":
+            row, gen, got, total = payload
+            if gen == row._gen and row in self.rows and row.result is None:
+                pct = (got * 100.0 / total) if total else 0.0
+                row.note("downloading… " + format(pct, ".0f") + "%", "#666")
+        elif kind == "dl_settle":
+            if payload == self._fetch_token:
+                self._dl_pending = max(0, self._dl_pending - 1)
+                if self._dl_pending == 0:
+                    self._on_fetch_done()
 
     # ---- model + rows -------------------------------------------------------
     def _build_rows(self):
@@ -312,8 +385,15 @@ class RadioBoardsTab:
         for w in self.rows_box.winfo_children():
             w.destroy()
         self.rows = []
+        self._fetched_label = None   # fresh rows belong to no fetched version yet
         for i, kind in enumerate(spec.model_order(self.model), start=1):
             self.rows.append(_Row(self, self.rows_box, kind, i))
+        # In server mode the local picker is disabled; rows are filled by Fetch.
+        local = self.source_var.get() == "local"
+        for r in self.rows:
+            r.enable_local_pick(local)
+            if not local:
+                r.note("Pick a version above and click Fetch.", "#8a6d00")
 
     def _on_model_change(self):
         if self._writing:
@@ -321,7 +401,204 @@ class RadioBoardsTab:
         self.model = self.model_var.get()
         self._build_rows()
         self.confirm.set(False)
+        # The catalogue is one list for all models; just re-filter the version
+        # dropdown to the new model's generations.
+        if self.source_var.get() == "server":
+            self._populate_versions()
         self._refresh_start_state()
+
+    # ---- source (local files vs server download) ---------------------------
+    def _on_source_change(self):
+        if self._writing:
+            return
+        server = self.source_var.get() == "server"
+        # A source switch invalidates every prior selection: rebuild the rows
+        # clean (their pick-enabled state follows the new source).
+        self._build_rows()
+        if server:
+            self.server_row.pack(fill="x", pady=(0, 6), after=self.src_row)
+            self._ensure_catalog()
+        else:
+            self.server_row.pack_forget()
+        self._refresh_start_state()
+
+    def _ensure_catalog(self):
+        """Load the catalogue once, lazily, when the operator first needs it."""
+        if self._catalog_loaded or self._catalog_loading:
+            if self._catalog_loaded:
+                self._populate_versions()
+            return
+        self._reload_catalog()
+
+    def _on_reload_click(self, _event=None):
+        # The reload icon is a label, whose disabled state does not block clicks
+        # the way a button's does — gate it here (disabled during a fetch or a
+        # write batch).
+        if not self.reload_btn.instate(["disabled"]):
+            self._reload_catalog()
+
+    def _reload_catalog(self):
+        if self._catalog_loading:
+            return
+        self._catalog_loading = True
+        self.version_box["values"] = []
+        self.version_var.set("")
+        self.fetch_btn.state(["disabled"])
+        self.server_status.configure(text="Loading versions from the AesApp server…", foreground="#666")
+        threading.Thread(target=self._catalog_worker, daemon=True).start()
+
+    def _catalog_worker(self):
+        try:
+            bundles = download.fetch_catalog(
+                on_status=lambda m: self._post("catalog_status", m))
+            self._post("catalog_ok", bundles)
+        except download.DownloadError as e:
+            self._post("catalog_err", str(e))
+        except Exception as e:  # noqa: BLE001
+            self._post("catalog_err", str(e))
+
+    def _populate_versions(self):
+        """Fill the version dropdown from the cached catalogue, filtered to the
+        current model's generation(s), newest first, each tagged by generation."""
+        wanted = spec.server_models(self.model)
+        self._version_map = {}
+        labels = []
+        for b in self._catalog:
+            if b.get("fwupdModel") not in wanted:
+                continue
+            # The server's bundle label is the display name (e.g. "1.05 NX & DMR
+            # Beta Testing"); with none, fall back to "<radio> <version>", e.g.
+            # "D878UV 4.01a" — the radio name already carries the generation.
+            label = b.get("label") or (
+                spec.server_model_name(b.get("fwupdModel", "")) + " " + str(b.get("cpsVersion", "?")))
+            # Guard against a duplicate label (same gen+version) — keep it unique.
+            n, base = 1, label
+            while label in self._version_map:
+                n += 1
+                label = base + " #" + str(n)
+            self._version_map[label] = b
+            labels.append(label)
+        self.version_box["values"] = labels
+        if labels:
+            self.version_box.current(0)
+            self.fetch_btn.state(["!disabled"])
+            self._on_version_selected()
+            self.server_status.configure(
+                text="Choose a version and click Fetch. Files are checksum-verified before flashing.",
+                foreground="#127a2e")
+        else:
+            self.version_var.set("")
+            self.fetch_btn.state(["disabled"])
+            self.cps_btn.state(["disabled"])
+            self.server_status.configure(
+                text="No prebuilt versions are available for this radio yet. Use your own files instead.",
+                foreground="#8a6d00")
+
+    def _selected_bundle(self) -> "dict | None":
+        return self._version_map.get(self.version_var.get())
+
+    def _on_version_selected(self):
+        """React to a version change: enable the CPS-download button only when
+        the selected version has a CPS link, and clear any rows fetched for a
+        DIFFERENT version so a stale selection can't be carried into a flash."""
+        b = self._selected_bundle()
+        self.cps_btn.state(["!disabled"] if (b and b.get("cpsUrl")) else ["disabled"])
+        if not self._writing and self.version_var.get() != self._fetched_label \
+                and any(r.result or r.error for r in self.rows):
+            self._clear_fetched()
+
+    def _clear_fetched(self):
+        """Reset every row back to the un-fetched state."""
+        self._fetched_label = None
+        for r in self.rows:
+            r.reset_selection()
+            r.note("Pick a version above and click Fetch.", "#8a6d00")
+        self.server_status.configure(
+            text="Choose a version and click Fetch. Files are checksum-verified before flashing.",
+            foreground="#127a2e")
+        self._refresh_start_state()
+
+    def _on_download_cps(self):
+        """Open the vendor CPS installer for the selected version in the browser
+        (it is a separate Windows program, not a file this updater flashes)."""
+        b = self._selected_bundle()
+        url = b.get("cpsUrl") if b else None
+        if not url:
+            return
+        try:
+            webbrowser.open(url)
+            self.server_status.configure(text="Opening the CPS download in your browser…",
+                                         foreground="#127a2e")
+        except Exception:  # noqa: BLE001
+            self.server_status.configure(text="Couldn't open a browser. CPS link: " + url,
+                                         foreground="#b00020")
+
+    def _on_fetch(self):
+        if self._writing:
+            return
+        label = self.version_var.get()
+        bundle = self._version_map.get(label)
+        if not bundle:
+            return
+        self._fetched_label = label   # rows now belong to this version
+        comps = {c.get("kind"): c for c in bundle.get("components", [])}
+        self._fetch_token += 1
+        token = self._fetch_token
+        self.fetch_btn.state(["disabled"])
+        self.reload_btn.state(["disabled"])
+        self.server_status.configure(
+            text="Downloading " + label + " …", foreground="#666")
+        started = 0
+        for r in self.rows:
+            comp = comps.get(r.kind)
+            if comp is None:
+                # This bundle has no such target (e.g. a Gen-1 bundle has no APRS
+                # board). Leave the row unavailable for this radio.
+                r.reset_selection()
+                r.note("not part of this version", "#999")
+                continue
+            r._gen += 1
+            r.begin_download()
+            threading.Thread(target=self._fetch_worker,
+                             args=(r, comp, r._gen, token), daemon=True).start()
+            started += 1
+        self._dl_pending = started
+        if started == 0:
+            self.server_status.configure(
+                text="This version has no flashable targets for the selected radio.", foreground="#8a6d00")
+            self.fetch_btn.state(["!disabled"])
+            self.reload_btn.state(["!disabled"])
+
+    def _on_fetch_done(self):
+        """All components of a fetch have settled — re-enable the picker and
+        summarise how many targets are ready."""
+        self.fetch_btn.state(["!disabled"])
+        self.reload_btn.state(["!disabled"])
+        ok = sum(1 for r in self.rows if r.result is not None)
+        failed = [r for r in self.rows if r.error]
+        if failed:
+            self.server_status.configure(
+                text=str(ok) + " target(s) ready; " + str(len(failed))
+                     + " could not be downloaded — see the rows below. Try Fetch again.",
+                foreground="#b00020")
+        elif ok:
+            self.server_status.configure(
+                text=str(ok) + " target(s) downloaded and checksum-verified. Tick the ones to write, "
+                     "then agree and Start.", foreground="#127a2e")
+
+    def _fetch_worker(self, row, comp, gen, token):
+        try:
+            res = download.download_component(
+                comp,
+                on_progress=lambda got, total: self._post("dl_progress", (row, gen, got, total)),
+                on_status=lambda m: self._post("dl_status", (row, gen, m)))
+            self._post("compiled", (row, res, None, gen))
+        except download.DownloadError as e:
+            self._post("compiled", (row, None, str(e), gen))
+        except Exception as e:  # noqa: BLE001
+            self._post("compiled", (row, None, str(e), gen))
+        finally:
+            self._post("dl_settle", token)
 
     # ---- build the views ----------------------------------------------------
     def _build(self):
@@ -340,6 +617,46 @@ class RadioBoardsTab:
                                  variable=self.model_var, command=self._on_model_change)
             rb.pack(side="left", padx=(8, 0))
             self._model_btns.append(rb)
+
+        # Source chooser — your own vendor files, or a prebuilt bundle fetched
+        # (and checksum-verified) from the AesApp server.
+        src_row = self.src_row = ttk.Frame(outer)
+        src_row.pack(fill="x", pady=(0, 4))
+        ttk.Label(src_row, text="Update files:", font=("", 11, "bold")).pack(side="left")
+        self._src_btns = []
+        for val, txt in (("local", "My own files"),
+                         ("server", "Download from AesApp server")):
+            rb = ttk.Radiobutton(src_row, text=txt, value=val, variable=self.source_var,
+                                 command=self._on_source_change)
+            rb.pack(side="left", padx=(8, 0))
+            self._src_btns.append(rb)
+
+        # Server picker (shown only in server mode): version dropdown + Fetch.
+        self.server_row = ttk.Frame(outer)
+        ttk.Label(self.server_row, text="Version:").grid(row=0, column=0, sticky="w")
+        self.version_var = tk.StringVar()
+        self.version_box = ttk.Combobox(self.server_row, textvariable=self.version_var,
+                                        state="readonly", width=34)
+        self.version_box.grid(row=0, column=1, sticky="w", padx=(6, 4))
+        self.version_box.bind("<<ComboboxSelected>>", lambda _e: self._on_version_selected())
+        # Reload the catalog — a compact clickable refresh icon immediately right
+        # of the list. A ttk.Button keeps a wide aqua minimum even at width=2, so
+        # this is a label-as-icon: it takes only the glyph's width.
+        self.reload_btn = ttk.Label(self.server_row, text="⟳", font=("", 16),
+                                    cursor="hand2")
+        self.reload_btn.grid(row=0, column=2, padx=(2, 2))
+        self.reload_btn.bind("<Button-1>", self._on_reload_click)
+        self.fetch_btn = ttk.Button(self.server_row, text="Fetch", command=self._on_fetch)
+        self.fetch_btn.grid(row=0, column=3, padx=(8, 0))
+        # Downloads the vendor CPS software for the selected version (a separate
+        # program from this updater); enabled only when the catalog has a link.
+        self.cps_btn = ttk.Button(self.server_row, text="Download CPS",
+                                  command=self._on_download_cps)
+        self.cps_btn.grid(row=0, column=4, padx=(8, 0))
+        self.cps_btn.state(["disabled"])
+        self.server_status = ttk.Label(self.server_row, text="", foreground="#666",
+                                       wraplength=620, justify="left")
+        self.server_status.grid(row=1, column=0, columnspan=5, sticky="w", pady=(2, 0))
 
         banner = ttk.Label(
             outer, justify="left", foreground="#7a1020", wraplength=640,
@@ -448,10 +765,21 @@ class RadioBoardsTab:
         self.start_btn.state(["!disabled"] if ok else ["disabled"])
 
     def _lock_model(self, locked: bool):
-        """Lock/unlock the model radio buttons — locked while a batch is in
-        progress so the model can't change under an in-flight plan."""
-        for rb in getattr(self, "_model_btns", []):
+        """Lock/unlock the model + source choosers — locked while a batch is in
+        progress so nothing can change under an in-flight plan."""
+        for rb in getattr(self, "_model_btns", []) + getattr(self, "_src_btns", []):
             rb.state(["disabled"] if locked else ["!disabled"])
+        # The server picker, when present, is locked too.
+        server = self.source_var.get() == "server"
+        for w in (getattr(self, "version_box", None), getattr(self, "fetch_btn", None),
+                  getattr(self, "reload_btn", None)):
+            if w is not None:
+                w.state(["disabled"] if (locked or not server) else ["!disabled"])
+        if getattr(self, "cps_btn", None) is not None:
+            if locked or not server:
+                self.cps_btn.state(["disabled"])
+            else:
+                self._on_version_selected()   # re-evaluate from the selected bundle
 
     def _plan_has_fw(self) -> bool:
         return any(p.kind == spec.KIND_FW for p in self.plan)

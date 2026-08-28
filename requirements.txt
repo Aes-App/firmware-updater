@@ -2,6 +2,8 @@
 # -- no native emulator needed for scanning/flashing.
 bleak>=0.21      # macOS CoreBluetooth / Linux BlueZ / Windows WinRT (BT-module tab)
 pyserial>=3.5    # CDC-ACM serial (radio firmware / boards tab)
+certifi>=2024.2  # CA bundle for the "download from server" HTTPS fetch (radio_fw.download);
+                 # a frozen app has no system CA store Python's ssl can see
 
 # Optional: unicorn>=2.0  -- only for validate_ufw (local .ufw structural check),
 # never used in frozen builds (crashes inside PyInstaller on hardened Windows).

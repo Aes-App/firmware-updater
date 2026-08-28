@@ -81,11 +81,23 @@ CDI_GRANULARITY = 0x00010000  # 64 KB, constant in every observed entry
 #: D878UVII targets were byte-matched against the factory captures: all three
 #: (fw @0x08004000/ID878UV2, icon @0x20000/PROGRAM, aprs "LinkBoard"
 #: @0x2000/IA-BORD) reproduce their capture frame-for-frame.
+#:
+#: D878UV (Gen 1) is the same radio one hardware generation back and shares every
+#: address; it differs ONLY in the fw ident (ID878UV, not ID878UV2) and has no
+#: APRS linked board. That one-byte ident is the whole safety of the split: a
+#: Gen-1 fw flashed against a Gen-2 identity (or the reverse) is refused at the
+#: connect-time ident query, which is exactly the gen mix-up users make.
 MODELS = {
     "d890": {
         "fw":   dict(base=0x0800C000, span=(0x08000000, 0x08400000), max_entries=1,
                      handshake="UPDATE", ident="ID890UV", finish_acked=False),
         "icon": dict(base=0x00040000, span=(0x00000000, 0x08000000), max_entries=None,
+                     handshake="PROGRAM", ident=None, finish_acked=True),
+    },
+    "d878uv": {
+        "fw":   dict(base=0x08004000, span=(0x08000000, 0x08400000), max_entries=1,
+                     handshake="UPDATE", ident="ID878UV", finish_acked=False),
+        "icon": dict(base=0x00020000, span=(0x00000000, 0x08000000), max_entries=None,
                      handshake="PROGRAM", ident=None, finish_acked=True),
     },
     "d878uv2": {
@@ -218,10 +230,33 @@ def validate_package(kind: str, entries: List[CdiEntry], cdd_len: int,
                 f"expected {expect_foff:#x} -- entries do not tile the .CDD "
                 f"(wrong .CDD for this .CDI?)")
         expect_foff += e.length
-    if expect_foff != cdd_len:
+    if expect_foff > cdd_len:
         raise UpdateFileError(
-            f".CDI entries sum to {expect_foff} bytes but the .CDD is "
-            f"{cdd_len} bytes -- mismatched .CDD/.CDI pair")
+            f".CDI entries need {expect_foff} bytes but the .CDD is only "
+            f"{cdd_len} bytes -- the .CDD is truncated or is the wrong file "
+            f"for this .CDI")
+    trailing = cdd_len - expect_foff
+    if trailing:
+        # The .CDD is longer than the .CDI indexes. compile_frames only ever
+        # reads cdd[foff:foff+length], so those trailing bytes are never sent to
+        # the radio -- but an unexplained size gap is also the signature of a
+        # mismatched pair, which the strict tiling check exists to catch. Some
+        # genuine vendor FW packages nonetheless ship a padded .CDD (D878UV
+        # V3.08N: 132 bytes past a 939036-byte payload that both the .CDI and
+        # the .spi agree on), so tolerate the slack ONLY when the .spi manifest
+        # independently confirms the indexed payload length -- two agreeing
+        # indices outweigh one over-long data blob. With no .spi to corroborate,
+        # a size gap stays a hard error.
+        if spi is None:
+            raise UpdateFileError(
+                f".CDI entries sum to {expect_foff} bytes but the .CDD is "
+                f"{cdd_len} ({trailing} trailing) -- supply the .spi to confirm "
+                f"the payload length, or fix the .CDD/.CDI pair")
+        if parse_spi(spi)[2] != expect_foff:
+            raise UpdateFileError(
+                f".CDD carries {trailing} bytes past the {expect_foff}-byte "
+                f"indexed payload and the .spi total ({parse_spi(spi)[2]}) does "
+                f"not confirm it -- mismatched package files")
 
     # --- flash-address ordering ------------------------------------------
     for prev, e in zip(entries, entries[1:]):
@@ -261,10 +296,10 @@ def validate_package(kind: str, entries: List[CdiEntry], cdd_len: int,
             raise UpdateFileError(
                 f".spi declares {count} entries but the .CDI holds "
                 f"{len(entries)} -- mismatched package files")
-        if total != cdd_len:
+        if total != expect_foff:
             raise UpdateFileError(
-                f".spi declares total length {total} but the .CDD is "
-                f"{cdd_len} bytes -- mismatched package files")
+                f".spi declares total length {total} but the .CDI payload is "
+                f"{expect_foff} bytes -- mismatched package files")
 
 
 # ---------------------------------------------------------------------------

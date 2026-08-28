@@ -79,6 +79,21 @@ def _ext_list(exts: list[str]) -> str:
     return ", ".join("." + e.upper() for e in exts)
 
 
+def _detect_878_gen(spi: bytes | None, fallback: str) -> str:
+    """The D878 fw generation baked into the .spi model tail: a 'D878UV2' model
+    string means Gen 2 (d878uv2), a plain 'D878UV' means Gen 1 (d878uv). Only
+    ever narrows an 878-series model; returns the caller's model unchanged when
+    there is no .spi or it names neither (so D890 and manual .CDD/.CDI picks are
+    untouched)."""
+    if fallback not in ("d878uv", "d878uv2") or not spi:
+        return fallback
+    if b"D878UV2" in spi:
+        return "d878uv2"
+    if b"D878UV" in spi:
+        return "d878uv"
+    return fallback
+
+
 def _read(path: str) -> bytes:
     try:
         with open(path, "rb") as f:
@@ -108,8 +123,15 @@ def compile_files(kind: str, paths: list[str], model: str = "d890") -> CompileRe
             cdd = _read(files["cdd"])
             cdi = _read(files["cdi"])
             spi = _read(files["spi"]) if "spi" in files else None
-            artifact, manifest = fwupd_cps.compile_update(
-                kind, cdd, cdi, spi, model=spec.cps_model(model))
+            cps = spec.cps_model(model)
+            # The D878 tab covers both generations, which differ only in the fw
+            # ident. Detect the generation from the package itself so a Gen-1 fw
+            # isn't compiled against the Gen-2 identity (a mismatch that would
+            # otherwise only surface as a refusal at the connect-time ident
+            # query, after the operator has walked the whole wizard).
+            if kind == spec.KIND_FW:
+                cps = _detect_878_gen(spi, cps)
+            artifact, manifest = fwupd_cps.compile_update(kind, cdd, cdi, spi, model=cps)
         else:  # pragma: no cover - guarded above
             raise CompileError('Unknown update kind "' + str(kind) + '".')
     except (fwupd_cps.UpdateFileError, fwupd_nr.UfwError, fwupd_sct.SctHexError) as e:

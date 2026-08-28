@@ -26,7 +26,9 @@ Write-Host "== Installing build deps ==" -ForegroundColor Cyan
 # unicorn is NOT needed: the JieLi auth now runs in pure Python (bt_ota._jl_e1),
 # because unicorn's JIT/memory setup access-violates inside the frozen app on
 # hardened Windows. We neither install nor bundle it (the .exe spec excludes it).
-& $py -m pip install bleak pyserial pyinstaller pillow
+# certifi ships the CA bundle radio_fw.download needs for HTTPS in the frozen app
+# (a frozen Windows exe has no system CA store Python's ssl can see).
+& $py -m pip install bleak pyserial pyinstaller pillow certifi
 
 Write-Host "== Sanity: imports + pure-Python auth (no unicorn) ==" -ForegroundColor Cyan
 $env:JL_OTA_AUTH_SO = (Resolve-Path "bt_ota\libjl_ota_auth.so")
