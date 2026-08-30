@@ -74,8 +74,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": APP_NAME,
         "CFBundleDisplayName": APP_NAME,
-        "CFBundleShortVersionString": "0.7.0",
-        "CFBundleVersion": "0.7.0",
+        "CFBundleShortVersionString": "0.7.1",
+        "CFBundleVersion": "0.7.1",
         "LSMinimumSystemVersion": "11.0",
         "NSHighResolutionCapable": True,
         "NSHumanReadableCopyright": "© AesApp Inc.",

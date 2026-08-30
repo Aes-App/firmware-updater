@@ -416,6 +416,14 @@ class RadioBoardsTab:
         # clean (their pick-enabled state follows the new source).
         self._build_rows()
         if server:
+            # A prior LOCAL write batch leaves the picker widgets disabled:
+            # _lock_model(False) on "Back to setup" disables them whenever the
+            # source isn't already server (its "not server" arm), and nothing
+            # else clears that flag. Re-enable the version list + reload icon now
+            # that server mode is active, so the dropdown is openable. Fetch/CPS
+            # stay governed by the loaded catalog (_populate_versions).
+            self.version_box.state(["!disabled"])
+            self.reload_btn.state(["!disabled"])
             self.server_row.pack(fill="x", pady=(0, 6), after=self.src_row)
             self._ensure_catalog()
         else:
