@@ -152,6 +152,12 @@ class _Row:
                                 wraplength=520, justify="left")
         self.status.grid(row=1, column=1, columnspan=2, sticky="w")
 
+        # The component's own version, from the server catalog (server mode). It
+        # sits at the right of the row and stays blank for local files, which
+        # carry no such label.
+        self.version_lbl = ttk.Label(frame, text="", foreground="#0b5f99")
+        self.version_lbl.grid(row=0, column=3, sticky="e", padx=(6, 0))
+
     def _pick(self):
         multi = spec.is_multi(self.kind)
         exts = spec.accepts(self.kind)         # cps: [cdd, cdi, spi]
@@ -263,6 +269,13 @@ class _Row:
 
     def note(self, text: str, color: str = "#666"):
         self.status.configure(text=text, foreground=color)
+
+    def set_server_version(self, version):
+        """Show this component's catalog version (server mode), or clear it."""
+        try:
+            self.version_lbl.configure(text=("ver " + version) if version else "")
+        except tk.TclError:
+            pass
 
     def reset_selection(self):
         """Forget any picked/downloaded package — a source or model switch
@@ -514,6 +527,17 @@ class RadioBoardsTab:
         if not self._writing and self.version_var.get() != self._fetched_label \
                 and any(r.result or r.error for r in self.rows):
             self._clear_fetched()
+        # Show each component's own version from the catalog, so the operator sees
+        # e.g. the BT+APRS board's "2.00H" before fetching anything.
+        self._show_component_versions(b)
+
+    def _show_component_versions(self, bundle):
+        """Label each row with its component's catalog version (blank if the
+        bundle has no such component, or has no version set for it)."""
+        comps = {c.get("kind"): c for c in (bundle.get("components", []) if bundle else [])}
+        for r in self.rows:
+            c = comps.get(r.kind)
+            r.set_server_version(c.get("version") if c else None)
 
     def _clear_fetched(self):
         """Reset every row back to the un-fetched state."""
