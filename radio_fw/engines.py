@@ -10,7 +10,7 @@ truth; if it does not match its manifest we refuse to open the port.
     fw    main MCU code flash    921600 8N1, RTS only    "UPDATE"  -> 06 -> ident
     icon  asset/icon/font flash  921600 8N1, RTS only    "PROGRAM" -> bare 06
     nr    JieLi NR daughterboard 9600->10000->115200      device-PULL, we serve reads
-    sct   SiCOMM SCT3288 DSP     baud not in any capture   84 A9 61 framing
+    sct   SiCOMM SCT3288 DSP     38400 8N1, per the vendor  84 A9 61 framing
 
 fw and icon are the SAME protocol with different handshakes and address spaces.
 nr and sct share nothing with them or with each other.
@@ -19,7 +19,11 @@ THIS CODE CAN BRICK A RADIO. Three rules follow from that:
   1. Verify before transmitting — the artifact sha256 is checked against the
      manifest before the port is opened.
   2. Never resend a CPS frame — the bootloader wants a strictly monotonic
-     single-pass address stream; a missing ACK ends the run.
+     single-pass address stream; a missing ACK ends the run. That rule is the
+     CPS bootloader's, NOT a general one: the SCT3288 asks for a frame again in
+     so many words (17 03/06) and the NR board re-requests anything it misses,
+     so those two engines retry exactly where their vendor tool does — and
+     nowhere else.
   3. Never guess — an unexpected reply, out-of-range read, or unknown opcode
      raises with the bytes in the message.
 
@@ -53,6 +57,15 @@ class FirmwareUpdateError(Exception):
 
 class AbortedError(FirmwareUpdateError):
     """The operator aborted mid-run."""
+
+
+class ReplyTimeoutError(FirmwareUpdateError):
+    """The device did not answer in time (as distinct from answering wrongly).
+
+    Kept separate because the two mean different things to an operator: no
+    reply at all points at the link (baud, cable, wrong mode), a wrong reply
+    points at the protocol or the device's state.
+    """
 
 
 # ── tiny helpers ────────────────────────────────────────────────────────────
@@ -236,7 +249,7 @@ class SerialLink:
             self.check_abort()
             if time.monotonic() > deadline:
                 have = len(self._buf)
-                raise FirmwareUpdateError(
+                raise ReplyTimeoutError(
                     "timeout after " + str(timeout_ms) + " ms: wanted " + str(n)
                     + " byte(s), have " + str(have)
                     + (" [" + _hex(bytes(self._buf)) + "]" if have else ""))
@@ -270,14 +283,6 @@ class SerialLink:
             raise FirmwareUpdateError(
                 "serial write failed: " + str(e) + " — the radio dropped off the USB bus "
                 "(reset, cable or power glitch?)")
-
-
-def _expect_exact(link: SerialLink, expected: bytes, timeout_ms: int, what: str) -> bytes:
-    """Read exactly len(expected) bytes and require them to match (SCT3288 ACKs)."""
-    got = link.read_exactly(len(expected), timeout_ms)
-    if got != expected:
-        raise FirmwareUpdateError(what + ": expected " + _hex(expected) + ", got " + _hex(got))
-    return got
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -480,9 +485,12 @@ NR_OP = {"START": 0x01, "READ": 0x02, "STOP": 0x03, "LEN_NOTIFY": 0x04, "ALIVE":
 NR_MAX_READ = 65535 - 1 - 8
 NR_BAUD_LADDER = {9600: 10000, 10000: 115200, 115200: 115200}
 NR_LEN_NOTIFY_REPLY = _nr.build_frame(NR_OP["STOP"])   # aa55010003e7a2 (opcode 0x03, certain bytes)
-NR_FIRST_REPLY_TIMEOUT_MS = 5000
 NR_IDLE_TIMEOUT_MS = 20000
 NR_MAX_RESYNC_DROP = 256
+NR_MAX_BAD_CRC = 8
+NR_MAX_DEVICE_PAYLOAD = 32
+NR_ENTER_ATTEMPTS = 5
+NR_ENTER_RETRY_TIMEOUT_MS = 2000
 PROGRESS_EVERY_READS = 16
 
 
@@ -491,35 +499,83 @@ def _build_nr_frame(opcode: int, payload: bytes = b"") -> bytes:
 
 
 def _nr_read_frame(link: SerialLink, timeout_ms: int) -> dict:
-    """One complete frame off the byte stream. The board is the only talker, so
-    leading garbage means a baud mismatch — resync loudly and give up."""
-    dropped = 0
-    while True:
-        link.ensure(2, timeout_ms)
-        if link._buf[0] == 0xAA and link._buf[1] == 0x55:
-            break
-        link.consume(1)
-        dropped += 1
-        if dropped > NR_MAX_RESYNC_DROP:
+    """One complete, CRC-valid frame off the byte stream.
+
+    A frame that fails its CRC is DROPPED, not fatal. The factory tool does the
+    same: a frame that fails verification leaves its state machine waiting
+    without stopping its retry timer, so the exchange is simply re-driven.
+    Raising here instead would end a 982-read
+    session mid-image — the one outcome that needs the emergency PF3+PF1 entry
+    to recover from. The board re-requests anything it does not get, so a
+    dropped frame costs a round trip and nothing else.
+
+    Leading garbage still means a baud mismatch: the board is the only talker,
+    so resync loudly and give up after NR_MAX_RESYNC_DROP bytes.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000.0
+
+    def left() -> int:
+        """The budget still owed to the CALLER's timeout.
+
+        Every wait below must be measured against this one deadline. Passing a
+        cached value to each `ensure()` would restart its clock three times over
+        and let one call block ~3x the timeout the caller asked for.
+        """
+        ms = int((deadline - time.monotonic()) * 1000)
+        if ms <= 0:
+            raise ReplyTimeoutError(
+                "timeout after " + str(timeout_ms) + " ms waiting for a complete NR frame")
+        return ms
+
+    bad_crc = 0
+
+    def drop_frame(why: str):
+        """Discard a frame we cannot trust and resync past it.
+
+        Only the AA 55 is consumed, never the declared length: a corrupted
+        length field is exactly the case where trusting it would swallow the
+        good frames queued behind it.
+        """
+        nonlocal bad_crc
+        link.consume(2)
+        bad_crc += 1
+        link.log(why + " — dropping it and resyncing; the board re-requests anything it does not "
+                 "get (#" + str(bad_crc) + ")", "er")
+        if bad_crc > NR_MAX_BAD_CRC:
             raise FirmwareUpdateError(
-                "no AA 55 frame in " + str(dropped) + " bytes of RX — the link is at the wrong baud "
-                "or the board is not in update mode.")
-    if dropped:
-        link.log("resynchronised after dropping " + str(dropped) + " stray byte(s)", "er")
-    link.ensure(4, timeout_ms)
-    length = link._buf[2] | (link._buf[3] << 8)
-    if length < 1:
-        raise FirmwareUpdateError("NR frame declares length " + str(length) + " (minimum 1: the opcode)")
-    total = 6 + length
-    link.ensure(total, timeout_ms)
-    frame = link.consume(total)
-    stored = frame[total - 2] | (frame[total - 1] << 8)
-    calc = _nr.crc16_xmodem(frame[:total - 2])
-    if stored != calc:
-        raise FirmwareUpdateError(
-            "NR frame CRC mismatch: stored 0x" + format(stored, "x") + ", computed 0x" + format(calc, "x")
-            + " over " + _hex(frame[:min(total, 24)]) + " — the link is corrupt, stopping.")
-    return {"opcode": frame[4], "payload": frame[5:total - 2], "raw": frame}
+                str(bad_crc) + " NR frames in a row were unusable — the link is corrupt, not merely "
+                "noisy. Stopping.")
+
+    while True:
+        dropped = 0
+        while True:
+            link.ensure(2, left())
+            if link._buf[0] == 0xAA and link._buf[1] == 0x55:
+                break
+            link.consume(1)
+            dropped += 1
+            if dropped > NR_MAX_RESYNC_DROP:
+                raise FirmwareUpdateError(
+                    "no AA 55 frame in " + str(dropped) + " bytes of RX — the link is at the wrong baud "
+                    "or the board is not in update mode.")
+        if dropped:
+            link.log("resynchronised after dropping " + str(dropped) + " stray byte(s)", "er")
+        link.ensure(4, left())
+        length = link._buf[2] | (link._buf[3] << 8)
+        if length < 1 or length > NR_MAX_DEVICE_PAYLOAD:
+            drop_frame("NR frame declares a " + str(length) + "-byte body, outside the 1.."
+                       + str(NR_MAX_DEVICE_PAYLOAD) + " the board ever sends")
+            continue
+        total = 6 + length
+        link.ensure(total, left())
+        frame = bytes(link._buf[:total])          # peek: only consume once it verifies
+        stored = frame[total - 2] | (frame[total - 1] << 8)
+        calc = _nr.crc16_xmodem(frame[:total - 2])
+        if stored == calc:
+            link.consume(total)
+            return {"opcode": frame[4], "payload": frame[5:total - 2], "raw": frame}
+        drop_frame("NR frame CRC mismatch: stored 0x" + format(stored, "x") + ", computed 0x"
+                   + format(calc, "x") + " over " + _hex(frame[:min(total, 24)]))
 
 
 def _run_nr(port_name: str, artifact: bytes, manifest: dict, on_log, on_progress, abort):
@@ -553,16 +609,36 @@ def _run_nr(port_name: str, artifact: bytes, manifest: dict, on_log, on_progress
     try:
         link.open(link_meta.get("initial_baud") or 9600, dtr=True, rts=True)   # NR: DTR+RTS
         link.flush()
-        on_log("TX " + _hex(enter_frame) + " REQ_ENTER_UPDATE_MODE", "tx")
-        link.send(enter_frame)
+
+        pending = None
+        for attempt in range(1, NR_ENTER_ATTEMPTS + 1):
+            on_log("TX " + _hex(enter_frame) + " REQ_ENTER_UPDATE_MODE"
+                   + ("" if attempt == 1 else " (retry " + str(attempt - 1)
+                      + " of " + str(NR_ENTER_ATTEMPTS - 1) + ")"), "tx")
+            link.send(enter_frame)
+            try:
+                pending = _nr_read_frame(link, NR_ENTER_RETRY_TIMEOUT_MS)
+                break
+            except AbortedError:
+                raise
+            except ReplyTimeoutError:
+                if attempt == NR_ENTER_ATTEMPTS:
+                    raise FirmwareUpdateError(
+                        "the NR board did not answer REQ_ENTER_UPDATE_MODE in "
+                        + str(NR_ENTER_ATTEMPTS) + " attempts over "
+                        + str(NR_ENTER_ATTEMPTS * NR_ENTER_RETRY_TIMEOUT_MS // 1000)
+                        + " s. Nothing has been written. Check the screen reads \"UPDATE MODE "
+                        "FOR LinkBoard\" and that this is the radio's COM port.")
+                link.flush()
 
         last_start_res = None
-        timeout_ms = NR_FIRST_REPLY_TIMEOUT_MS
         finished = False
         while not finished:
             link.check_abort()
-            f = _nr_read_frame(link, timeout_ms)
-            timeout_ms = NR_IDLE_TIMEOUT_MS   # only the first reply is on a short leash
+            if pending is not None:
+                f, pending = pending, None
+            else:
+                f = _nr_read_frame(link, NR_IDLE_TIMEOUT_MS)
             op = f["opcode"]
             payload = f["payload"]
             raw = f["raw"]
@@ -609,11 +685,15 @@ def _run_nr(port_name: str, artifact: bytes, manifest: dict, on_log, on_progress
                         + "), expected 8 = u32 LE offset + u32 LE count.")
                 off = _read_u32le(payload, 0)
                 count = _read_u32le(payload, 4)
-                if count == 0 or off + count > len(artifact):
+                if count and off + count > len(artifact):
                     raise FirmwareUpdateError(
                         "the board requested " + str(count) + " byte(s) at 0x" + format(off, "x")
                         + " but the .ufw is " + str(len(artifact)) + " bytes. Refusing to answer short "
                         "or padded — that writes garbage to the board. Wrong .ufw for this NR board?")
+                if off > len(artifact):
+                    raise FirmwareUpdateError(
+                        "the board asked to read at 0x" + format(off, "x") + ", past the end of the "
+                        + str(len(artifact)) + "-byte .ufw. Wrong .ufw for this NR board?")
                 if count > NR_MAX_READ:
                     raise FirmwareUpdateError(
                         "the board requested " + str(count) + " bytes at 0x" + format(off, "x")
@@ -698,9 +778,16 @@ def _run_nr(port_name: str, artifact: bytes, manifest: dict, on_log, on_progress
 # ═══════════════════════════════════════════════════════════════════════════
 # SCT3288 baseband DSP — host push, its own framing
 # ═══════════════════════════════════════════════════════════════════════════
-SCT_BAUD = 115200
+SCT_BAUD = 38400
+SCT_ALT_BAUD = 115200
 SCT_ACK_TIMEOUT_MS = 3000
 SCT_ERASE_TIMEOUT_MS = 15000
+SCT_REPLY_BODY_TIMEOUT_MS = 1000
+SCT_MAGIC = b"\x84\xa9\x61"
+SCT_MAX_REPLY_LEN = 64          # every known reply body is 2 or 4 bytes
+SCT_NAK_OPCODE = 0x17
+SCT_NAK_SUBCODES = (0x03, 0x06)
+SCT_RESENDABLE = ("write", "flash_initial", "flash_end")
 
 
 def plan_sct(artifact: bytes, manifest: dict) -> list[dict]:
@@ -768,13 +855,54 @@ def plan_sct(artifact: bytes, manifest: dict) -> list[dict]:
     return plan
 
 
+def _sct_read_frame(link: SerialLink, timeout_ms: int, what: str) -> bytes:
+    """One complete 84 A9 61 reply, framed by its OWN length field.
+
+    The SCT3288's replies are not all the same length, so a fixed-length read
+    is unsafe: the opening `16 00` is answered 8 bytes long by a parity-OFF DSP
+    and 10 bytes long by a parity-ON one (see _run_sct), and the mid-flash redo
+    request has never been captured at all. Reading len(expected) bytes would
+    strand the tail of a longer reply in the buffer and desync every ACK after
+    it.
+
+    The vendor's pad-to-even never applies here: every reply body is 2 or 4
+    bytes, so every reply is 8 or 10 bytes long — even either way.
+    """
+    head = link.read_exactly(5, timeout_ms)
+    if head[:3] != SCT_MAGIC:
+        raise FirmwareUpdateError(
+            what + ": reply does not begin with the 84 a9 61 magic (" + _hex(head)
+            + ") — the link is out of frame. Stopping rather than guessing where "
+            "the next reply starts.")
+    length = (head[3] << 8) | head[4]
+    if length < 1 or length > SCT_MAX_REPLY_LEN:
+        raise FirmwareUpdateError(
+            what + ": reply declares a " + str(length) + "-byte body (" + _hex(head)
+            + "), which is outside anything this protocol sends. Stopping.")
+    return head + link.read_exactly(1 + length, SCT_REPLY_BODY_TIMEOUT_MS)
+
+
+def _sct_is_redo_request(frame: bytes) -> bool:
+    """Is this the device asking us to send the last frame again?"""
+    return (len(frame) >= 8 and frame[:3] == SCT_MAGIC
+            and frame[6] == SCT_NAK_OPCODE and frame[7] in SCT_NAK_SUBCODES)
+
+
 def _run_sct(port_name: str, artifact: bytes, manifest: dict, on_log, on_progress, abort,
              baud: int = SCT_BAUD, pace_ms: int = 0):
     plan = plan_sct(artifact, manifest)
     _verify_artifact(artifact, manifest, on_log)
     on_progress(0, len(plan), "handshake")
 
+    alt_first_ack = None
+    parity_restore_frame = None
+    for step in plan:
+        if step["kind"] == "parity_restore":
+            alt_first_ack = step["ack"]
+            parity_restore_frame = artifact[step["off"]:step["off"] + step["len"]]
+
     link = SerialLink(port_name, on_log=on_log, abort=abort)
+    committed = False        # has an erase been issued? (nothing is recoverable after)
     try:
         link.open(baud, dtr=True, rts=True)
         link.flush()
@@ -786,39 +914,95 @@ def _run_sct(port_name: str, artifact: bytes, manifest: dict, on_log, on_progres
         writes_sent = 0
         for i, step in enumerate(plan):
             link.check_abort()
+            kind = step["kind"]
             frame = artifact[step["off"]:step["off"] + step["len"]]
-            is_erase = step["kind"] in ("flash_initial", "flash_end")
-            if step["kind"] != "write":
-                on_log("TX " + step["kind"] + " " + _hex(frame), "tx")
+            is_erase = kind in ("flash_initial", "flash_end")
+            is_last = i == len(plan) - 1
+            timeout = SCT_ERASE_TIMEOUT_MS if is_erase else SCT_ACK_TIMEOUT_MS
+            accepted = [step["ack"]]
+            if i == 0 and alt_first_ack and alt_first_ack != step["ack"]:
+                accepted.append(alt_first_ack)
+            if kind != "write":
+                on_log("TX " + kind + " " + _hex(frame), "tx")
             link.send(frame)
-            try:
-                r = _expect_exact(link, step["ack"], SCT_ERASE_TIMEOUT_MS if is_erase else SCT_ACK_TIMEOUT_MS,
-                                  "frame " + str(i) + " (" + step["kind"] + ")")
-                if step["kind"] != "write":
-                    on_log("RX " + _hex(r), "rx")
-            except AbortedError:
-                raise
-            except FirmwareUpdateError as e:
-                if i == 0:
+            if is_erase:
+                committed = True
+
+            attempt = 0
+            while True:
+                attempt += 1
+                lenient = is_last and kind == "parity_restore"
+                try:
+                    r = _sct_read_frame(link, timeout, "frame " + str(i) + " (" + kind + ")")
+                except AbortedError:
+                    raise
+                except FirmwareUpdateError as e:
+                    if lenient:
+                        on_log(str(e) + " — but the flash itself is complete and acknowledged; "
+                               "only the closing parity restore went unanswered. Continuing.", "er")
+                        r = None
+                        break
+                    if i == 0:
+                        raise FirmwareUpdateError(
+                            str(e) + " The SCT3288 did not answer the opening frame in a form this "
+                            "engine recognises. The most likely cause is the host baud: this run used "
+                            + str(baud) + " — try "
+                            + str(SCT_ALT_BAUD if baud == SCT_BAUD else SCT_BAUD) + " instead."
+                            + _sct_state_note(committed))
                     raise FirmwareUpdateError(
-                        str(e) + ". The SCT3288 did not answer the opening PARITY_DISABLE frame. The "
-                        "host-side baud for this update is not recorded in any capture (SCT.ini says "
-                        "38400, the capture pacing implies ~115200) — this run used " + str(baud)
-                        + "; try the other rate. Nothing was flashed: the erase only starts after two "
-                        "acknowledged control frames.")
+                        str(e) + " — the SCT3288 stopped answering as expected."
+                        + _sct_state_note(committed))
+                if r in accepted:
+                    break
+                if (_sct_is_redo_request(r) and kind in SCT_RESENDABLE
+                        and attempt == 1):
+                    on_log("RX " + _hex(r) + " — the SCT3288 asked for frame " + str(i)
+                           + " (" + kind + ") again; resending once", "er")
+                    link.send(frame)
+                    continue
+                if lenient:
+                    on_log("RX " + _hex(r) + " — unexpected reply to the closing parity restore. "
+                           "The flash itself is complete and acknowledged; continuing.", "er")
+                    break
                 raise FirmwareUpdateError(
-                    str(e) + " — stopping. NOT retrying: the erase regions are already committed, so "
-                    "this component must be re-flashed from the start.")
-            if step["kind"] == "write":
+                    "frame " + str(i) + " (" + kind + "): expected "
+                    + " or ".join(_hex(a) for a in accepted) + ", got " + _hex(r)
+                    + "." + _sct_state_note(committed))
+
+            if kind != "write" and r is not None:
+                on_log("RX " + _hex(r), "rx")
+            if kind == "write":
                 writes_sent += 1
             if pace_ms:
                 time.sleep(pace_ms / 1000.0)
-            on_progress(i + 1, len(plan), "write" if step["kind"] == "write" else ("finish" if writes_sent else "handshake"))
+            on_progress(i + 1, len(plan), "write" if kind == "write" else ("finish" if writes_sent else "handshake"))
         on_log("SCT3288 update complete: " + str(writes_sent) + " write frames acknowledged. This "
                "protocol has no read-back or verify step.", "ok")
         on_progress(len(plan), len(plan), "done")
+    except FirmwareUpdateError:
+        if parity_restore_frame is not None and link.ser is not None:
+            on_log("TX parity_restore " + _hex(parity_restore_frame)
+                   + " (restoring the DSP's parity state on the way out)", "tx")
+            saved_abort, link.abort = link.abort, None
+            try:
+                link.send(parity_restore_frame)
+            except Exception:
+                on_log("could not send the parity restore — the DSP may be left with parity ON. "
+                       "The next run's opening frame accepts either state, so this is recoverable.", "er")
+            finally:
+                link.abort = saved_abort
+        raise
     finally:
         link.close()
+
+
+def _sct_state_note(committed: bool) -> str:
+    """What the operator can conclude about the baseband's state."""
+    if committed:
+        return (" Stopping. NOT retrying from here: an erase is already committed, so this "
+                "component must be re-flashed from the start.")
+    return (" Stopping. No erase has been issued yet, so nothing on the baseband has been "
+            "changed — it is safe to try again.")
 
 
 # ── public surface ──────────────────────────────────────────────────────────

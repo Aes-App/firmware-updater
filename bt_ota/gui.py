@@ -24,7 +24,7 @@ from .client import MODELS, firmware_kind, make_client, scan_devices
 APP_TITLE = "AesApp Radio Updater"
 VENDOR = "AesApp Inc."
 WEBSITE = "https://aes.app/"
-VERSION = "0.7.2"
+VERSION = "0.8.0"
 LOG_PREFIX = "[aesapp]"
 
 # Report this version to the firmware server on its API queries (User-Agent + a
@@ -628,9 +628,18 @@ def _diag() -> int:
     from radio_fw.vendor import fwupd_cps
     assert fwupd_cps.MODELS["d878uv2"]["aprs"]["ident"] == "IA-BORD"
     assert "aprs" in engines.CPS_PROFILE
+    # Digital Contact Refresh tab: its container decoder, server client, wire engine
+    # and launch-link plumbing — prove they are bundled and agree on the frame.
+    from radio_contacts import catalog as _cc, engine as _ce, gui_tab as _cg, launch as _cl  # noqa: F401
+    from radio_contacts import segments as _cs
+    assert _ce.frame(0x07000000, bytes(range(16))).hex() == "570700000010000102030405060708090a0b0c0d0e0f" + "8f06"
+    assert _cs.block_count(_cs.decode_container(_cs.encode_container(
+        [_cs.Segment(0x10, bytes(32))]))) == 2
+    assert _cl.parse_launch_url("aesapp://contacts?token=abcdefghijklmnop").token == "abcdefghijklmnop"
     print(f"DIAG OK: BT tab (bleak+so, auth sample={out.hex()}); "
           f"Radio tab (pyserial {serial.VERSION}, precompilers, {len(images)} step photos, "
-          f"models {'/'.join(spec.model_label(m) for m in spec.MODEL_ORDER)})")
+          f"models {'/'.join(spec.model_label(m) for m in spec.MODEL_ORDER)}); "
+          f"Contacts tab (segments/catalog/engine/launch)")
     return 0
 
 
@@ -658,10 +667,44 @@ def _install_diagnostics():
             pass
 
 
-def main():
+def launch_url_from_argv(argv) -> str | None:
+    """The aesapp:// link the OS passed on the command line (Windows hands the
+    registered scheme's URL as the first argument), else None."""
+    for a in argv or ():
+        if isinstance(a, str) and a.strip().lower().startswith("aesapp:"):
+            return a.strip()
+    return None
+
+
+def main(url: str | None = None):
     if os.environ.get("BT_OTA_DIAG"):
         raise SystemExit(_diag())
     _install_diagnostics()
+
+    # aesapp:// links (the Digital Contact Refresh tab is opened from the Tools page
+    # on cps.aes.app). Three delivery paths, one handler:
+    #   - macOS: LaunchServices sends a GURL Apple Event, which Tk hands to the
+    #     ::tk::mac::LaunchURL command — the same event whether the app was just
+    #     launched for the link or was already running. Registered BEFORE the
+    #     disclaimer gate, which runs the event loop.
+    #   - Windows: the registered scheme starts the .exe with the link in argv;
+    #     if another instance is already up, hand the link to it and exit.
+    #   - the paste box in the tab, for when neither fires.
+    launch_mod = None
+    instance = None
+    try:
+        from radio_contacts import launch as launch_mod
+        instance = launch_mod.SingleInstance(_config_dir())
+        if url and instance.forward(url):
+            return   # the running instance took the link
+    except Exception:  # noqa: BLE001
+        instance = None
+    if launch_mod is not None and sys.platform == "win32" and getattr(sys, "frozen", False):
+        try:
+            launch_mod.register_windows_scheme()
+        except Exception:  # noqa: BLE001
+            pass
+
     root = tk.Tk()
     root.title(APP_TITLE)
     root.minsize(760, 640)
@@ -670,8 +713,41 @@ def main():
         ttk.Style().theme_use("aqua")  # native look on macOS; ignored elsewhere
     except tk.TclError:
         pass
+
+    pending_urls: list[str] = []
+    deliver = {"fn": None}
+
+    def _route_url(u):
+        u = str(u or "").strip()
+        if not u:
+            return
+        try:
+            import logging
+            logging.getLogger("bt_ota").info("launch link received (%d chars)", len(u))
+        except Exception:  # noqa: BLE001
+            pass
+        if deliver["fn"] is None:
+            pending_urls.append(u)
+        else:
+            try:
+                deliver["fn"](u)
+            except Exception:  # noqa: BLE001
+                pass
+        _bring_to_front(root)
+
+    try:
+        root.createcommand("::tk::mac::LaunchURL", _route_url)
+    except tk.TclError:
+        pass
+    if instance is not None:
+        instance.listen(lambda u: root.after(0, _route_url, u))
+    if url:
+        _route_url(url)
+
     _bring_to_front(root)
     if not run_disclaimer_gate(root):
+        if instance is not None:
+            instance.close()
         root.destroy()
         return
 
@@ -705,6 +781,66 @@ def main():
                   text="Radio and Boards updates are unavailable in this build: " + str(e)
                        + "\n\nThe Bluetooth Module Update tab is unaffected.").pack(padx=16, pady=16)
 
+    # The Digital Contact Refresh tab, opened from the Tools page on cps.aes.app.
+    contacts_page = ttk.Frame(nb)
+    nb.add(contacts_page, text="Digital Contact Refresh")
+    contacts = None
+    try:
+        from radio_contacts.gui_tab import ContactRefreshTab
+        contacts = ContactRefreshTab(contacts_page, root)
+    except Exception as e:  # noqa: BLE001
+        ttk.Label(contacts_page, foreground="#b00020", justify="left", wraplength=600,
+                  text="The Digital Contact Refresh is unavailable in this build: " + str(e)
+                       + "\n\nThe other tabs are unaffected.").pack(padx=16, pady=16)
+
+    # The Write Codeplug tab, opened from a codeplug's write dialog on cps.aes.app.
+    # HIDDEN until a codeplug link actually arrives: there is nothing to do in it
+    # without one, and an always-visible tab reads as a feature you can start
+    # from the app, which you cannot. add() registers the label and position,
+    # hide() takes it out of the tab strip while leaving the page built and
+    # managed, so _deliver can bring it back with a bare add().
+    codeplug_page = ttk.Frame(nb)
+    nb.add(codeplug_page, text="Write Codeplug")
+    codeplug = None
+    try:
+        from radio_codeplug.gui_tab import CodeplugWriteTab
+        codeplug = CodeplugWriteTab(codeplug_page, root)
+    except Exception as e:  # noqa: BLE001
+        ttk.Label(codeplug_page, foreground="#b00020", justify="left", wraplength=600,
+                  text="Writing codeplugs is unavailable in this build: " + str(e)
+                       + "\n\nThe other tabs are unaffected.").pack(padx=16, pady=16)
+    nb.hide(codeplug_page)
+
+    def _deliver(u):
+        # Route by the link's action: a codeplug link belongs to the codeplug
+        # tab, and anything else stays with the contact refresher (which is
+        # where an unrecognised link gets its own error message).
+        want_codeplug = False
+        try:
+            from radio_contacts import launch as _lu
+            want_codeplug = _lu.parse_launch_url(u).action == _lu.ACTION_CODEPLUG
+        except Exception:  # noqa: BLE001
+            pass
+        if want_codeplug:
+            # add() unhides it, keeping the label and position hide() left
+            # behind. (select() alone would also unhide it -- Tk resets a hidden
+            # tab's state on select -- but relying on that side effect hides the
+            # intent.) Done even when the tab FAILED to build, so a codeplug link
+            # lands on the page carrying that explanation rather than on the
+            # contact refresher, which would answer it with a contacts error.
+            nb.add(codeplug_page)
+            nb.select(codeplug_page)
+            if codeplug is not None:
+                codeplug.handle_launch_url(u)
+            return
+        nb.select(contacts_page)
+        if contacts is not None:
+            contacts.handle_launch_url(u)
+    deliver["fn"] = _deliver
+    for u in pending_urls:
+        _deliver(u)
+    pending_urls.clear()
+
     def _on_close():
         busy = False
         try:
@@ -716,11 +852,23 @@ def main():
                 busy = boards.is_writing()   # a serial firmware/board write
             except Exception:
                 pass
+        if not busy and contacts is not None:
+            try:
+                busy = contacts.is_writing()   # a contact-list write
+            except Exception:
+                pass
+        if not busy and codeplug is not None:
+            try:
+                busy = codeplug.is_writing()   # a codeplug write
+            except Exception:
+                pass
         if busy and not messagebox.askyesno(
                 "Quit during a write?",
                 "An update is in progress. Quitting now can leave a radio unbootable.\n\nQuit anyway?"):
             return
         app.stop()
+        if instance is not None:
+            instance.close()
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", _on_close)

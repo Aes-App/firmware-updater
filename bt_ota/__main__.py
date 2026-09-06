@@ -188,7 +188,8 @@ def build_parser() -> argparse.ArgumentParser:
     v = sub.add_parser("validate", help="check a firmware file offline (.ufw or .bin)")
     v.add_argument("ufw", metavar="firmware", help=".ufw (D890) or .bin (D578/D878)")
 
-    sub.add_parser("gui", help="launch the graphical updater")
+    g = sub.add_parser("gui", help="launch the graphical updater")
+    g.add_argument("url", nargs="?", help="an aesapp:// link to open (Digital Contact Refresh)")
 
     u = sub.add_parser("upgrade", help="flash firmware to the radio's BT module")
     u.add_argument("ufw", metavar="firmware", help=".ufw (D890) or .bin (D578/D878)")
@@ -204,7 +205,7 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if args.cmd == "gui":
         from .gui import main as gui_main
-        gui_main()
+        gui_main(url=args.url)
         return 0
     if args.cmd == "validate":
         return cmd_validate(args)

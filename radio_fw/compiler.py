@@ -1,9 +1,11 @@
 """Compile picked vendor files into the exact serial wire data + manifest.
 
 The desktop counterpart of the AesApp web CPS's server-side firmware compiler: it
-runs the SAME vendored precompilers (radio_fw/vendor/fwupd_*) the server runs, so
-the desktop tab validates a package exactly as hard as the web CPS does before a
-byte reaches the radio. None of the four update protocols verifies, CRCs or reads
+runs the vendored precompilers (radio_fw/vendor/fwupd_*), so the desktop tab
+validates a package at least as hard as the web CPS does before a byte reaches
+the radio.
+
+None of the four update protocols verifies, CRCs or reads
 anything back, so a wrong artifact is only discovered when the radio does not
 boot — the precompilers hard-fail on every structural deviation, and this module
 surfaces their diagnosis VERBATIM (the message names the exact file that is

@@ -325,7 +325,7 @@ class RadioBoardsTab:
         self._abort: threading.Event | None = None
         self._step_img = None       # keep a ref so Tk doesn't GC the photo
         self._last_port = None
-        self._sct_baud = tk.StringVar(value="115200")
+        self._sct_baud = tk.StringVar(value=str(engines.SCT_BAUD))
 
         self._build()
         self.root.after(80, self._drain)
@@ -755,7 +755,7 @@ class RadioBoardsTab:
         self.sct_baud_row = ttk.Frame(self.port_row)
         ttk.Label(self.sct_baud_row, text="baud:").pack(side="left")
         ttk.Combobox(self.sct_baud_row, textvariable=self._sct_baud, state="readonly", width=8,
-                     values=["115200", "38400"]).pack(side="left", padx=(4, 0))
+                     values=[str(engines.SCT_BAUD), str(engines.SCT_ALT_BAUD)]).pack(side="left", padx=(4, 0))
         self.connect_btn = ttk.Button(self.port_row, text="Connect && Write", command=self._on_connect)
         self.connect_btn.grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 

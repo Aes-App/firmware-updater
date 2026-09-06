@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from radio_fw import engines
 from radio_fw.vendor import fwupd_nr
+from radio_fw.vendor import fwupd_sct
 
 
 # ── fake serial port ─────────────────────────────────────────────────────────
@@ -200,9 +201,14 @@ class SctDevice:
     """SCT3288 double. Parses 84 A9 61 framing (incl. the write-frame extra
     0x00) and answers each frame with its manifest ACK."""
 
-    def __init__(self, manifest, wrong_ack_at=None):
+    def __init__(self, manifest, wrong_ack_at=None, first_ack=None,
+                 nak_at=None, silent_at=None):
         self.m = manifest
         self.wrong_ack_at = wrong_ack_at
+        self.first_ack = first_ack
+        self.nak_at = nak_at
+        self.silent_at = silent_at
+        self.seen = []          # (plan index, frame) for every frame received
         self.buf = bytearray()
         self.write_ack = bytes.fromhex(manifest["session"]["write_ack"])
         self.plan = engines.plan_sct(self._artifact_placeholder(), manifest) if False else None
@@ -230,12 +236,23 @@ class SctDevice:
             frame = self._take_frame()
             if frame is None:
                 return
-            kind = self.kinds[self.idx]
+            i = self.idx
+            self.seen.append((i, frame))
+            if i == self.silent_at:
+                self.silent_at = None      # stay mute once; answer any resend
+                continue
+            if i == self.nak_at:
+                self.nak_at = None         # NAK once; the resend re-enters here
+                ser.feed(SCT_NAK_FRAME)    # ... with self.idx deliberately unmoved
+                continue
+            kind = self.kinds[i]
             if kind == "write":
                 ack = self.write_ack
             else:
                 ack = self.control_acks[self.ci]
                 self.ci += 1
+            if i == 0 and self.first_ack is not None:
+                ack = self.first_ack
             if self.frames_seen == self.wrong_ack_at:
                 # flip one byte of the ACK
                 bad = bytearray(ack)
@@ -246,8 +263,12 @@ class SctDevice:
             ser.feed(ack)
 
     def _take_frame(self):
-        """Pull one 84 A9 61 frame out of self.buf, honoring the write-frame
-        extra 0x00. Returns the frame bytes or None if incomplete."""
+        """Pull one 84 A9 61 frame out of self.buf, honouring the vendor's
+        PAD TO EVEN: any frame whose total length is odd
+        carries one extra 0x00 that LEN does not count. For a write frame
+        (6 + 5 + N + 2) that is every EVEN payload N; control frames are 8 or
+        10 bytes and never padded. Returns the frame bytes, or None if
+        incomplete."""
         if len(self.buf) < 6:
             return None
         if bytes(self.buf[:3]) != b"\x84\xa9\x61":
@@ -255,10 +276,9 @@ class SctDevice:
             del self.buf[:1]
             return None
         length = (self.buf[3] << 8) | self.buf[4]   # big-endian, payload excl MOD
-        mod = self.buf[5]
         total = 6 + length
-        if mod == 0x03:
-            total += 1   # write frames carry one extra 0x00 past the declared LEN
+        if total % 2:
+            total += 1
         if len(self.buf) < total:
             return None
         frame = bytes(self.buf[:total])
@@ -270,9 +290,10 @@ class NrDevice:
     """JieLi NR-board double — the TALKER. Drives baud negotiation and read
     requests from the manifest, re-verifies each served slice, and stops."""
 
-    def __init__(self, ufw, manifest):
+    def __init__(self, ufw, manifest, zero_read=False):
         self.ufw = ufw
         self.m = manifest
+        self.zero_read = zero_read
         self.buf = bytearray()
         self.served = bytearray(len(ufw))
         self.served_bytes = 0
@@ -332,6 +353,9 @@ class NrDevice:
         p.append(("expect_read", rep_off, rep_cnt))
         p.append(("emit", fwupd_nr.build_frame(0x02, engines._u32le(rep_off) + engines._u32le(32))))
         p.append(("expect_read", rep_off, 32))
+        if self.zero_read:
+            p.append(("emit", fwupd_nr.build_frame(0x02, engines._u32le(rep_off) + engines._u32le(0))))
+            p.append(("expect_read", rep_off, 0))
         # 7. STOP status 0
         p.append(("emit", fwupd_nr.build_frame(0x03, b"\x00")))
         p.append(("done",))
@@ -585,6 +609,8 @@ SCT_MANIFEST = {
         [28, 30, "write"], [58, 30, "write"], [88, 30, "write"], [118, 30, "write"],
         [148, 10, "seg_parity"], [158, 10, "flash_end"], [168, 10, "parity_restore"]],
 }
+SCT_NAK_FRAME = bytes.fromhex("84a96100040017032f3f")
+SCT_ACK_PARITY_ON = bytes.fromhex("84a96100040016002f3d")
 
 
 def run_all():
@@ -771,6 +797,8 @@ def run_all():
         assert bytes(fake.tx) == SCT_ARTIFACT, "whole OUT stream must equal the artifact, in order"
         assert cap.last_progress == (10, 10, "done")
         assert fake.closes == 1
+        assert fake.signals[0] == (True, True), "SCT: DTR+RTS (see _run_sct)"
+        assert fake.stopbits == engines.serial.STOPBITS_ONE
     check("sct happy path", t_sct_happy)
 
     def t_sct_wrong_ack():
@@ -787,6 +815,233 @@ def run_all():
         bad = {**SCT_MANIFEST, "frame_index": SCT_MANIFEST["frame_index"][:-1]}
         expect_raises(lambda: engines.plan_sct(SCT_ARTIFACT, bad), "covers 168 of 178")
     check("sct plan tiling gate", t_sct_plan_gate)
+
+    def t_sct_default_baud():
+        dev = SctDevice(SCT_MANIFEST)
+        fake = _install(None, dev)
+        engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                    on_log=lambda *a: None, on_progress=lambda *a: None)
+        assert fake.opens == [38400], fake.opens
+    check("sct opens at the vendor-documented 38400", t_sct_default_baud)
+
+    def t_sct_first_ack_parity_on():
+        """A DSP left parity-ON by an earlier aborted run must still open."""
+        cap = Cap()
+        dev = SctDevice(SCT_MANIFEST, first_ack=SCT_ACK_PARITY_ON)
+        fake = _install(None, dev)
+        engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                    on_log=cap.on_log, on_progress=cap.on_progress)
+        assert bytes(fake.tx) == SCT_ARTIFACT, "the stream must still be the artifact, in order"
+        assert cap.last_progress == (10, 10, "done")
+    check("sct accepts the parity-ON reply to frame 0 (retry path)", t_sct_first_ack_parity_on)
+
+    def t_sct_parity_on_ack_is_frame_0_only():
+        """The dual ACK is a frame-0 concession, not a blanket one."""
+        class OneOffDevice(SctDevice):
+            def on_host_bytes(self, ser, data):
+                if self.idx == 3:          # the first write frame
+                    self.buf += data
+                    if self._take_frame() is not None:
+                        self.idx += 1
+                        ser.feed(SCT_ACK_PARITY_ON)
+                    return
+                super().on_host_bytes(ser, data)
+        _install(None, OneOffDevice(SCT_MANIFEST))
+        e = expect_raises(lambda: engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                                              on_log=lambda *a: None, on_progress=lambda *a: None),
+                          "frame 3 (write)")
+        assert "erase is already committed" in str(e), str(e)
+    check("sct parity-ON ack is accepted at frame 0 ONLY", t_sct_parity_on_ack_is_frame_0_only)
+
+    def t_sct_first_frame_silence_blames_baud():
+        saved = engines.SCT_ACK_TIMEOUT_MS
+        engines.SCT_ACK_TIMEOUT_MS = 60
+        try:
+            dev = SctDevice(SCT_MANIFEST, silent_at=0)
+            _install(None, dev)
+            e = expect_raises(lambda: engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                                                  on_log=lambda *a: None, on_progress=lambda *a: None),
+                              "this run used 38400")
+            assert "try 115200" in str(e), str(e)
+        finally:
+            engines.SCT_ACK_TIMEOUT_MS = saved
+    check("sct frame-0 SILENCE blames the baud", t_sct_first_frame_silence_blames_baud)
+
+    def t_sct_first_frame_wrong_reply_does_not_blame_baud():
+        dev = SctDevice(SCT_MANIFEST, first_ack=bytes.fromhex("84a9610002009900"))
+        _install(None, dev)
+        e = expect_raises(lambda: engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                                              on_log=lambda *a: None, on_progress=lambda *a: None),
+                          "frame 0 (parity_disable)")
+        assert "baud" not in str(e), "a WRONG reply is not a baud problem: " + str(e)
+        assert "No erase has been issued" in str(e), str(e)
+    check("sct frame-0 wrong reply does not blame the baud", t_sct_first_frame_wrong_reply_does_not_blame_baud)
+
+    def t_sct_redo_request_resent_once():
+        cap = Cap()
+        dev = SctDevice(SCT_MANIFEST, nak_at=4)      # plan index 4 = the second write
+        fake = _install(None, dev)
+        engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                    on_log=cap.on_log, on_progress=cap.on_progress)
+        again = SCT_ARTIFACT[58:88]
+        assert bytes(fake.tx).count(again) == 2, "the NAKed frame must go out exactly twice"
+        assert len(fake.tx) == len(SCT_ARTIFACT) + len(again)
+        assert cap.last_progress == (10, 10, "done")
+    check("sct resends once on a 17 03 redo request", t_sct_redo_request_resent_once)
+
+    def t_sct_redo_is_bounded_to_one():
+        """A device that keeps asking must end the run, not loop forever."""
+        class AlwaysNak(SctDevice):
+            def on_host_bytes(self, ser, data):
+                if self.idx == 3:
+                    self.buf += data
+                    while True:
+                        fr = self._take_frame()
+                        if fr is None:
+                            return
+                        if fr == SCT_ARTIFACT[28:58]:
+                            self.naks = getattr(self, "naks", 0) + 1
+                        ser.feed(SCT_NAK_FRAME)
+                super().on_host_bytes(ser, data)
+        dev = AlwaysNak(SCT_MANIFEST)
+        fake = _install(None, dev)
+        e = expect_raises(lambda: engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                                              on_log=lambda *a: None, on_progress=lambda *a: None),
+                          "frame 3 (write)")
+        assert dev.naks == 2, "exactly one resend: %r NAKs" % dev.naks
+        assert bytes(fake.tx).count(SCT_ARTIFACT[28:58]) == 2
+        assert "erase is already committed" in str(e), str(e)
+    check("sct redo is bounded to a single resend", t_sct_redo_is_bounded_to_one)
+
+    def t_sct_redo_not_honoured_for_control_frames():
+        dev = SctDevice(SCT_MANIFEST, nak_at=1)      # parity_enable — not resendable
+        _install(None, dev)
+        e = expect_raises(lambda: engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                                              on_log=lambda *a: None, on_progress=lambda *a: None),
+                          "frame 1 (parity_enable)")
+        assert "No erase has been issued" in str(e), str(e)
+    check("sct does not resend control frames on a NAK", t_sct_redo_not_honoured_for_control_frames)
+
+    def t_sct_trailing_parity_restore_is_lenient():
+        cap = Cap()
+        dev = SctDevice(SCT_MANIFEST, wrong_ack_at=9)    # the closing parity_restore
+        fake = _install(None, dev)
+        engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                    on_log=cap.on_log, on_progress=cap.on_progress)
+        assert bytes(fake.tx) == SCT_ARTIFACT
+        assert cap.last_progress == (10, 10, "done")
+        assert any("flash itself is complete" in m for _, m in cap.logs), cap.logs[-3:]
+    check("sct completed flash survives a bad closing parity ACK", t_sct_trailing_parity_restore_is_lenient)
+
+    def t_sct_parity_restored_on_failure():
+        dev = SctDevice(SCT_MANIFEST, wrong_ack_at=4)
+        fake = _install(None, dev)
+        expect_raises(lambda: engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                                          on_log=lambda *a: None, on_progress=lambda *a: None),
+                      "re-flashed from the start")
+        restore = SCT_ARTIFACT[168:178]
+        assert bytes(fake.tx).endswith(restore), "the DSP's parity must be restored on the way out"
+    check("sct restores parity on the failure path", t_sct_parity_restored_on_failure)
+
+    def t_sct_parity_restored_on_abort():
+        """An ABORT is the failure that actually leaves the DSP parity-ON, so
+        the restore has to bypass the abort gate to reach the wire."""
+        dev = SctDevice(SCT_MANIFEST)
+        fake = _install(None, dev)
+        ev = threading.Event()
+        orig = engines.SerialLink.send
+
+        def send_then_abort(self, data):
+            orig(self, data)
+            if len(fake.tx) >= 58:      # mid write stream
+                ev.set()
+        engines.SerialLink.send = send_then_abort
+        try:
+            expect_raises(lambda: engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                                              on_log=lambda *a: None, on_progress=lambda *a: None,
+                                              abort=ev),
+                          "aborted by the operator")
+        finally:
+            engines.SerialLink.send = orig
+        assert bytes(fake.tx).endswith(SCT_ARTIFACT[168:178]), \
+            "the parity restore must still go out on an abort: " + fake.tx[-20:].hex()
+    check("sct restores parity even on an operator abort", t_sct_parity_restored_on_abort)
+
+    def t_sct_erase_failure_admits_the_erase():
+        """A failed FLASH_INITIAL must never claim the baseband is untouched:
+        the DSP answers only AFTER the physical erase."""
+        dev = SctDevice(SCT_MANIFEST, wrong_ack_at=2)     # plan index 2 = flash_initial
+        fake = _install(None, dev)
+        e = expect_raises(lambda: engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                                              on_log=lambda *a: None, on_progress=lambda *a: None),
+                          "frame 2 (flash_initial)")
+        assert "erase is already committed" in str(e), str(e)
+        assert "nothing on the baseband has been changed" not in str(e), str(e)
+        assert SCT_ARTIFACT[18:28] in bytes(fake.tx), "the erase frame really did go out"
+    check("sct failed erase does not claim the baseband is untouched", t_sct_erase_failure_admits_the_erase)
+
+    def t_sct_trailing_parity_silence_is_lenient():
+        """Silence on the closing frame must not fail a completed flash either."""
+        saved = engines.SCT_ACK_TIMEOUT_MS
+        engines.SCT_ACK_TIMEOUT_MS = 60
+        try:
+            cap = Cap()
+            dev = SctDevice(SCT_MANIFEST, silent_at=9)
+            fake = _install(None, dev)
+            engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                        on_log=cap.on_log, on_progress=cap.on_progress)
+            assert bytes(fake.tx) == SCT_ARTIFACT
+            assert cap.last_progress == (10, 10, "done")
+        finally:
+            engines.SCT_ACK_TIMEOUT_MS = saved
+    check("sct completed flash survives SILENCE on the closing frame", t_sct_trailing_parity_silence_is_lenient)
+
+    def t_sct_device_double_pads_to_even():
+        """Pin the double's own framing: it must follow pad-to-even, not the
+        old 'MOD 03 means one extra byte' rule."""
+        dev = SctDevice(SCT_MANIFEST)
+        odd_payload = fwupd_sct.write_frame(fwupd_sct.HexRecord(0, 0x0100, bytes(3)))
+        assert len(odd_payload) == 16 and odd_payload[5] == 0x03, "MOD 03, unpadded"
+        dev.buf += odd_payload + b"\xff"      # a sentinel that must NOT be eaten
+        got = dev._take_frame()
+        assert got == odd_payload, got.hex()
+        assert bytes(dev.buf) == b"\xff", dev.buf.hex()
+    check("sct device double frames by pad-to-even", t_sct_device_double_pads_to_even)
+
+    def t_sct_region_formula_matches_capture():
+        for addr, want in fwupd_sct.CAPTURE_PROVEN_REGIONS.items():
+            got = fwupd_sct.REGION_TABLE[addr]
+            assert got == want, "%#08x: table %#04x != capture %#04x" % (addr, got, want)
+            derived = fwupd_sct.region_byte(fwupd_sct.SEGMENT_ERASE_TYPE[addr])
+            assert derived == want, "%#08x: formula %#04x != capture %#04x" % (addr, derived, want)
+        assert fwupd_sct.REGION_TABLE[0x039000] == 0x05
+        assert fwupd_sct.REGION_TABLE[0x040000] == 0x0D
+        assert 0x05C000 not in fwupd_sct.REGION_TABLE
+        assert all(v & 1 for v in fwupd_sct.REGION_TABLE.values())
+    check("sct region byte = (erase type << 1) | 1", t_sct_region_formula_matches_capture)
+
+    def t_sct_pad_to_even():
+        r3 = fwupd_sct.HexRecord(0, 0x0100, bytes(3))
+        r4 = fwupd_sct.HexRecord(0, 0x0100, bytes(4))
+        f3, f4 = fwupd_sct.write_frame(r3), fwupd_sct.write_frame(r4)
+        assert len(f3) == 16 and len(f4) == 18, (len(f3), len(f4))
+        assert f4[-1] == 0x00
+        assert ((f4[3] << 8) | f4[4]) == 11, "LEN must not count the pad"
+        assert ((f3[3] << 8) | f3[4]) == 10
+        assert len(fwupd_sct.parity_disable_frame()) == 10
+        assert len(fwupd_sct.parity_enable_frame()) == 8
+        assert len(fwupd_sct.flash_initial_frame(0x03)) == 10
+    check("sct pads any odd-length frame, not every write frame", t_sct_pad_to_even)
+
+    def t_sct_region_base_without_discontinuity_refused():
+        recs = []
+        addr = 0x035000                     # a real base, so the first gate passes
+        while addr < 0x039000:              # ... run contiguously INTO the next one
+            recs.append(fwupd_sct.HexRecord(addr >> 16, addr & 0xFFFF, bytes(0x100)))
+            addr += 0x100
+        recs.append(fwupd_sct.HexRecord(0x039000 >> 16, 0x039000 & 0xFFFF, bytes(16)))
+        expect_raises(lambda: fwupd_sct.compile_stream(recs), "erase-region base")
+    check("sct refuses a region base reached contiguously", t_sct_region_base_without_discontinuity_refused)
 
     # -- NR happy path -------------------------------------------------------
     def t_nr_happy():
@@ -808,6 +1063,56 @@ def run_all():
         assert cap.last_progress[2] == "done"
         assert cap.last_progress[0] == manifest["payload_bytes"], (cap.last_progress, manifest["payload_bytes"])
     check("nr device-pull happy path", t_nr_happy)
+
+    def t_nr_zero_length_read():
+        """A 0-byte read is legal — the vendor answers it with a bare payload."""
+        ufw = _make_ufw()
+        manifest = fwupd_nr.build_manifest(ufw)
+        cap = Cap()
+        dev = NrDevice(ufw, manifest, zero_read=True)
+        _install(None, dev)
+        engines.run("nr", "COM_FAKE", ufw, manifest,
+                    on_log=cap.on_log, on_progress=cap.on_progress)
+        assert not dev.errors, dev.errors
+        assert cap.last_progress[2] == "done"
+    check("nr serves a zero-length read request", t_nr_zero_length_read)
+
+    def t_nr_bad_crc_is_dropped_not_fatal():
+        fake = _install(None, None)
+        logs = []
+        link = engines.SerialLink("COM_FAKE", on_log=lambda m, c="info": logs.append((c, m)))
+        link.open(9600, dtr=True, rts=True)
+        good = fwupd_nr.build_frame(0x01)
+        bad = bytearray(good)
+        bad[-1] ^= 0xFF                       # corrupt the CRC only
+        fake.feed(bytes(bad) + good)
+        f = engines._nr_read_frame(link, 2000)
+        assert f["opcode"] == 0x01 and f["raw"] == good
+        assert any("CRC mismatch" in m for _, m in logs), logs
+        fake.feed(bytes(bad) * (engines.NR_MAX_BAD_CRC + 1))
+        expect_raises(lambda: engines._nr_read_frame(link, 2000),
+                      "in a row were unusable")
+        link.close()
+    check("nr drops a corrupt frame instead of ending the session", t_nr_bad_crc_is_dropped_not_fatal)
+
+    def t_nr_enter_is_retried():
+        saved = engines.NR_ENTER_RETRY_TIMEOUT_MS
+        engines.NR_ENTER_RETRY_TIMEOUT_MS = 40
+        try:
+            ufw = _make_ufw()
+            manifest = fwupd_nr.build_manifest(ufw)
+            fake = _install(None, None)       # nothing ever answers
+            e = expect_raises(lambda: engines.run("nr", "COM_FAKE", ufw, manifest,
+                                                  on_log=lambda *a: None,
+                                                  on_progress=lambda *a: None),
+                              "did not answer REQ_ENTER_UPDATE_MODE")
+            assert "Nothing has been written" in str(e), str(e)
+            enter = fwupd_nr.build_frame(0x06)
+            assert engines.NR_ENTER_ATTEMPTS == 5
+            assert bytes(fake.tx) == enter * 5, fake.tx.hex()
+        finally:
+            engines.NR_ENTER_RETRY_TIMEOUT_MS = saved
+    check("nr retries the ENTER frame the board cannot re-request", t_nr_enter_is_retried)
 
     def t_nr_size_gate():
         ufw = _make_ufw()

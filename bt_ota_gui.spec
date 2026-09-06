@@ -44,6 +44,16 @@ hiddenimports += ["radio_fw", "radio_fw.gui_tab", "radio_fw.engines", "radio_fw.
                   # radio_fw.download's stdlib HTTPS stack (named so a minimal
                   # build can't drop them):
                   "ssl", "json", "urllib.request", "urllib.error", "certifi"]
+# Digital Contact Refresh tab (lazily imported in bt_ota.gui.main): the container
+# decoder, the token-bearing server client, the PC-mode wire engine, the
+# aesapp:// link plumbing, and the stdlib pieces they lean on.
+hiddenimports += ["radio_contacts", "radio_contacts.segments", "radio_contacts.catalog",
+                  "radio_contacts.engine", "radio_contacts.gui_tab", "radio_contacts.launch",
+                  "gzip", "socket", "secrets", "struct"]
+# Writing a codeplug prepared on the web app: the job client, the write/verify
+# engine and its tab. It reuses radio_contacts' transport and wire primitives.
+hiddenimports += ["radio_codeplug", "radio_codeplug.client", "radio_codeplug.engine",
+                  "radio_codeplug.gui_tab"]
 
 a = Analysis(
     ["bt_ota_gui.py"],
@@ -74,8 +84,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": APP_NAME,
         "CFBundleDisplayName": APP_NAME,
-        "CFBundleShortVersionString": "0.7.2",
-        "CFBundleVersion": "0.7.2",
+        "CFBundleShortVersionString": "0.8.0",
+        "CFBundleVersion": "0.8.0",
         "LSMinimumSystemVersion": "11.0",
         "NSHighResolutionCapable": True,
         "NSHumanReadableCopyright": "© AesApp Inc.",
@@ -84,5 +94,15 @@ app = BUNDLE(
             "Updates your AnyTone radio's Bluetooth module firmware over Bluetooth.",
         "NSBluetoothPeripheralUsageDescription":
             "Communicates with your AnyTone radio over Bluetooth.",
+        # The aesapp:// link scheme: the Tools page on cps.aes.app opens the DMR
+        # Contact Refresh tab through it. LaunchServices registers the scheme the
+        # first time the .app is launched (or copied to /Applications) and
+        # delivers the link as a GURL Apple Event, which Tk hands to the
+        # ::tk::mac::LaunchURL command bt_ota.gui.main defines.
+        "CFBundleURLTypes": [{
+            "CFBundleURLName": "AesApp Radio Updater",
+            "CFBundleURLSchemes": ["aesapp"],
+            "CFBundleTypeRole": "Viewer",
+        }],
     },
 )

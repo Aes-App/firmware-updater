@@ -58,6 +58,15 @@ hiddenimports += ["radio_fw", "radio_fw.gui_tab", "radio_fw.engines", "radio_fw.
                   "serial.tools.list_ports_windows",
                   # radio_fw.download's stdlib HTTPS stack + the CA bundle:
                   "ssl", "json", "urllib.request", "urllib.error", "certifi"]
+# Digital Contact Refresh tab (lazily imported in bt_ota.gui.main) + the stdlib
+# pieces it leans on, incl. winreg for the aesapp:// scheme registration.
+hiddenimports += ["radio_contacts", "radio_contacts.segments", "radio_contacts.catalog",
+                  "radio_contacts.engine", "radio_contacts.gui_tab", "radio_contacts.launch",
+                  "gzip", "socket", "secrets", "struct", "winreg"]
+# Writing a codeplug prepared on the web app: the job client, the write/verify
+# engine and its tab. It reuses radio_contacts' transport and wire primitives.
+hiddenimports += ["radio_codeplug", "radio_codeplug.client", "radio_codeplug.engine",
+                  "radio_codeplug.gui_tab"]
 
 ICON = "bt_ota/assets/AesApp.ico" if os.path.exists("bt_ota/assets/AesApp.ico") else None
 

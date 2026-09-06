@@ -1,7 +1,7 @@
 """The radio/board update targets per model, and how the desktop app treats each.
 
 Mirrors the AesApp web CPS's firmware-bundle model: one row per target, compiled
-from the same vendor files by the same precompilers (radio_fw/vendor/fwupd_*).
+from the same vendor files by the precompilers in radio_fw/vendor/fwupd_*.
 
 Two radios are supported here, chosen by a model radio button in the tab:
   D890UV    — Radio Firmware, Icons & Fonts, SCT3288 Baseband, NR Board
@@ -94,6 +94,19 @@ _INSTR_LINKBOARD = (
     "radio ON while holding both.\n"
     "The screen shows \"UPDATE MODE FOR LinkBoard\". Now connect the USB cable."
 )
+# The D890 NR board has a second, emergency-only entry the D878 LinkBoard does
+# not: radio firmware V1.05 added PF3 + PF1, which FORCES NR update mode. It is
+# the way back in after a power loss mid-update leaves the board dead (the
+# Bluetooth menu disappears and the NR/APRS version reads null), which is
+# exactly when PF3 + PF2 stops working. Same protocol once entered, so this
+# engine needs no second code path — only the operator needs telling.
+_INSTR_NR_D890 = _INSTR_LINKBOARD + (
+    "\n\n"
+    "Not entering this mode? If the Bluetooth menu has also disappeared and the "
+    "NR version reads null, a previous update lost power part-way. On radio "
+    "firmware V1.05 or later, hold PF3 and PF1 (the upper side key) instead and "
+    "power ON — that forces NR update mode. Then continue as normal."
+)
 _INSTR_SCT = (
     "Turn the radio OFF.\n"
     "Hold PF3 (top key) and the # key (bottom-right of the keypad) together, then "
@@ -112,7 +125,7 @@ MODELS = {
         "order": [KIND_FW, KIND_ICON, KIND_SCT, KIND_NR],
         "instructions": {
             KIND_FW: _INSTR_FW, KIND_ICON: _INSTR_ICON,
-            KIND_SCT: _INSTR_SCT, KIND_NR: _INSTR_LINKBOARD,
+            KIND_SCT: _INSTR_SCT, KIND_NR: _INSTR_NR_D890,
         },
     },
     "d878uv2": {
@@ -196,6 +209,8 @@ def entry_instructions(model: str, kind: str) -> str:
 # procedure is the standard AnyTone one and is the same for both radios; the
 # wizard shows it on the finish screen whenever Radio Firmware was flashed.
 _MCU_RESET = (
+    "Save your codeplug to the PC first if you have not already — this step "
+    "initialises the radio.\n\n"
     "1. Power the radio OFF.\n"
     "2. Hold the PTT key and PF1 together, then power the radio ON — keep holding "
     "until it restarts. Do NOT power the radio off while it is restarting.\n"
