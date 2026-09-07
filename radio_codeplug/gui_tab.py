@@ -33,6 +33,10 @@ from radio_contacts import segments as seg
 
 from . import client, engine
 
+# What a log line is about before the radio has identified itself. The other
+# tabs name the radio once they know it; until then they name themselves.
+_LOG_SOURCE = "Codeplug"
+
 _LOG_TAGS = {"tx": "#0b5fff", "rx": "#7a3fb0", "ok": "#127a2e", "er": "#b00020", "error": "#b00020",
              "info": "#444"}
 _NO_SESSION_TEXT = ("Start from the codeplug you want to write on cps.aes.app — “Write Codeplug to "
@@ -57,6 +61,8 @@ class CodeplugWriteTab:
         self.session: Optional[client.CodeplugSession] = None
         self.job: Optional[client.CodeplugJob] = None
         self.plan: Optional[client.WritePlan] = None
+        # What the radio said it is, once it has. Only the log reads it.
+        self.ident = None
         self._port_map: dict[str, str] = {}
         self._last_port: Optional[str] = None
         self._busy = False
@@ -74,10 +80,21 @@ class CodeplugWriteTab:
         try:
             while True:
                 kind, payload = self._q.get_nowait()
-                self._handle(kind, payload)
+                try:
+                    self._handle(kind, payload)
+                except Exception as e:  # noqa: BLE001
+                    # One malformed message must not take the tab down with it:
+                    # an exception escaping here would skip the re-arm below and
+                    # stop the pump for good, freezing the log and the UI on
+                    # whatever they last showed.
+                    try:
+                        self._log(f"internal error handling {kind!r}: {e}", "er")
+                    except Exception:  # noqa: BLE001
+                        pass
         except queue.Empty:
             pass
-        self.root.after(80, self._drain)
+        finally:
+            self.root.after(80, self._drain)
 
     def _handle(self, kind, payload):
         if kind == "log":
@@ -89,11 +106,15 @@ class CodeplugWriteTab:
         elif kind == "job_ok":
             self._busy = False
             self.job, self.plan = payload
+            # A new job can be a different radio; do not let the last one's name
+            # sit in front of this job's handshake lines.
+            self.ident = None
             self._describe_job()
             self._refresh_write_state()
         elif kind == "job_err":
             self._busy = False
             self.session = self.job = self.plan = None
+            self.ident = None
             self.session_status.configure(text=str(payload), foreground="#b00020")
             self._log(str(payload), "er")
             self._refresh_write_state()
@@ -114,6 +135,8 @@ class CodeplugWriteTab:
             else:
                 self.wstatus.configure(text=f"Writing ({phase}) — do not unplug the radio.",
                                        foreground="#444")
+        elif kind == "ident":
+            self.ident = payload
         elif kind == "write_done":
             self._on_write_done(payload)
         elif kind == "write_err":
@@ -189,8 +212,13 @@ class CodeplugWriteTab:
         self._refresh_ports()
 
     def _log(self, msg: str, cls: str = "info"):
+        # Same shape as the Digital Contact tab: when, then who. This log had
+        # neither, which makes a write that went wrong far harder to read back --
+        # the timings are half the evidence.
+        who = self.ident.model if self.ident is not None else _LOG_SOURCE
+        line = "[" + time.strftime("%H:%M:%S") + "] [" + who + "] " + msg
         self.log.configure(state="normal")
-        self.log.insert("end", msg + "\n", cls if cls in _LOG_TAGS else "info")
+        self.log.insert("end", line + "\n", cls if cls in _LOG_TAGS else "info")
         self.log.see("end")
         self.log.configure(state="disabled")
 
@@ -350,6 +378,7 @@ class CodeplugWriteTab:
                 port, plan.codeplug, plan.contacts,
                 on_log=on_log, on_progress=on_progress, on_phase=on_phase,
                 abort=abort, ident_tokens=job.ident_tokens,
+                on_ident=lambda i: self._post("ident", i),
             )
             sess.report(res.outcome, res.detail(), res.message)
             self._post("write_done", res)

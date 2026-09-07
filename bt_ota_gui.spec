@@ -9,6 +9,24 @@ from PyInstaller.utils.hooks import collect_all
 
 APP_NAME = "AesApp Radio Updater"
 
+
+def _app_version():
+    """The one VERSION in bt_ota/gui.py, so the bundle cannot disagree with the
+    app it contains. It held a hardcoded copy in TWO places, which is exactly how
+    a build ends up claiming a version it is not. Parsed rather than imported:
+    importing the GUI package at build time would drag in Tk and bleak for a
+    three-digit string. (bt_ota_gui_win.spec does the same.)"""
+    import re
+    src = open(os.path.join(os.path.dirname(os.path.abspath(SPEC)), "bt_ota", "gui.py"),
+               encoding="utf-8").read()
+    m = re.search(r'^VERSION\s*=\s*"([\d.]+)"', src, re.M)
+    if not m:
+        raise SystemExit("bt_ota/gui.py has no VERSION -- the bundle would ship unversioned")
+    return m.group(1)
+
+
+VERSION = _app_version()
+
 datas, binaries, hiddenimports = [], [], []
 # bleak (BLE) + unicorn (auth emulator) + the pyobjc frameworks bleak uses on macOS
 # + pyserial (the radio/boards firmware tab talks to the CDC-ACM port)
@@ -84,8 +102,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": APP_NAME,
         "CFBundleDisplayName": APP_NAME,
-        "CFBundleShortVersionString": "0.8.0",
-        "CFBundleVersion": "0.8.0",
+        "CFBundleShortVersionString": VERSION,
+        "CFBundleVersion": VERSION,
         "LSMinimumSystemVersion": "11.0",
         "NSHighResolutionCapable": True,
         "NSHumanReadableCopyright": "© AesApp Inc.",

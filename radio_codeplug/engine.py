@@ -228,8 +228,12 @@ def write_codeplug(port_name: str,
                    on_phase: Optional[Callable[[str, int, int], None]] = None,
                    abort: Optional[threading.Event] = None,
                    ident_tokens=None,
+                   on_ident: Optional[Callable[[object], None]] = None,
                    verify: bool = True) -> WriteResult:
     """Write, commit, and (unless asked not to) verify a whole codeplug.
+
+    `on_ident(ident)` fires once, as soon as the radio has said what it is, so a
+    caller's log can stop guessing and name it.
 
     `on_phase(phase, done, total)` is the caller's hook for the server
     heartbeat; it is called at most every HEARTBEAT_EVERY_S so a slow network
@@ -258,6 +262,8 @@ def write_codeplug(port_name: str,
         on_progress(0, total, "handshake")
         link = _session(port_name, on_log, abort)
         ident = ce._read_ident(link, on_log)
+        if on_ident is not None:
+            on_ident(ident)   # so the log can say WHICH radio from here on
         if not _model_matches(ident_tokens, ident.model):
             raise CodeplugWriteError(
                 f'this radio identifies as "{ident.model}" but the codeplug was built for '

@@ -9,6 +9,74 @@ import os
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 APP_NAME = "AesApp Radio Updater"
+COMPANY = "AesApp Inc."
+
+
+def _app_version():
+    """The one VERSION in bt_ota/gui.py, so the .exe cannot disagree with the app
+    it contains. Parsed rather than imported: importing the GUI package at build
+    time would drag in Tk and bleak for a three-digit string."""
+    import re
+    src = open(os.path.join(os.path.dirname(os.path.abspath(SPEC)), "bt_ota", "gui.py"),
+               encoding="utf-8").read()
+    m = re.search(r'^VERSION\s*=\s*"([\d.]+)"', src, re.M)
+    if not m:
+        raise SystemExit("bt_ota/gui.py has no VERSION -- the .exe would ship unversioned")
+    return m.group(1)
+
+
+VERSION = _app_version()
+_v = tuple(int(x) for x in (VERSION.split(".") + ["0", "0", "0"])[:4])
+
+
+def _version_resource():
+    """Write the VSVersionInfo resource PyInstaller stamps into the .exe.
+
+    Without it the .exe has a blank Properties -> Details: no version, no
+    company. That costs support ("which build are you on?") and gives SmartScreen
+    less to go on for a binary that is not Authenticode-signed.
+
+    Emitted as literal text rather than by building the objects, because
+    PyInstaller.utils.win32.versioninfo imports win32api and so cannot even be
+    imported off Windows -- which would make this spec unreadable on the machine
+    that maintains it. PyInstaller reads the file back with eval()
+    (load_version_info_from_text_file), so the text IS the supported interface.
+    """
+    text = f"""VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers={_v},
+    prodvers={_v},
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        '040904B0',
+        [StringStruct('CompanyName', {COMPANY!r}),
+         StringStruct('FileDescription', {APP_NAME!r}),
+         StringStruct('FileVersion', {VERSION!r}),
+         StringStruct('InternalName', {APP_NAME!r}),
+         StringStruct('OriginalFilename', {APP_NAME + ".exe"!r}),
+         StringStruct('ProductName', {APP_NAME!r}),
+         StringStruct('ProductVersion', {VERSION!r})])
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"""
+    out = os.path.join(os.path.dirname(os.path.abspath(SPEC)), "build", "version_win.txt")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return out
+
+
+VERSION_FILE = _version_resource()
 
 datas, binaries, hiddenimports = [], [], []
 # NB: unicorn is deliberately NOT bundled on Windows. The JieLi auth now runs in
@@ -93,7 +161,7 @@ exe = EXE(
     console=False,           # windowed GUI, no console
     disable_windowed_traceback=False,
     icon=ICON,
-    version=None,
+    version=VERSION_FILE,
     upx=False,
     runtime_tmpdir=None,
 )

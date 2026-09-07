@@ -205,8 +205,11 @@ class SctDevice:
                  nak_at=None, silent_at=None):
         self.m = manifest
         self.wrong_ack_at = wrong_ack_at
+        #: reply to plan index 0 with these bytes instead (a parity-ON DSP)
         self.first_ack = first_ack
+        #: answer plan index N with a "resend it" NAK once, then behave
         self.nak_at = nak_at
+        #: answer plan index N with nothing at all, once
         self.silent_at = silent_at
         self.seen = []          # (plan index, frame) for every frame received
         self.buf = bytearray()
@@ -264,7 +267,7 @@ class SctDevice:
 
     def _take_frame(self):
         """Pull one 84 A9 61 frame out of self.buf, honouring the vendor's
-        PAD TO EVEN: any frame whose total length is odd
+        PAD TO EVEN (SCT3252.cs:3936-3942): any frame whose total length is odd
         carries one extra 0x00 that LEN does not count. For a write frame
         (6 + 5 + N + 2) that is every EVEN payload N; control frames are 8 or
         10 bytes and never padded. Returns the frame bytes, or None if
@@ -293,6 +296,8 @@ class NrDevice:
     def __init__(self, ufw, manifest, zero_read=False):
         self.ufw = ufw
         self.m = manifest
+        #: also ask for a ZERO-length read — legal, and the vendor answers it
+        #: with a bare 9-byte payload (BootHelper.cs:172-184)
         self.zero_read = zero_read
         self.buf = bytearray()
         self.served = bytearray(len(ufw))
@@ -609,7 +614,12 @@ SCT_MANIFEST = {
         [28, 30, "write"], [58, 30, "write"], [88, 30, "write"], [118, 30, "write"],
         [148, 10, "seg_parity"], [158, 10, "flash_end"], [168, 10, "parity_restore"]],
 }
+#: The device asking for the last frame again: body 17 03 ("receive do command
+#: error, resend command again", SCT3252.cs:4479-4505), 2F + XOR, 10 bytes.
 SCT_NAK_FRAME = bytes.fromhex("84a96100040017032f3f")
+#: What a PARITY-ON DSP answers to the opening `16 00` — the same 10-byte echo
+#: the closing parity_restore gets. A DSP is left in that state by any run of
+#: ours that aborted mid-session before the fix.
 SCT_ACK_PARITY_ON = bytes.fromhex("84a96100040016002f3d")
 
 
@@ -797,6 +807,10 @@ def run_all():
         assert bytes(fake.tx) == SCT_ARTIFACT, "whole OUT stream must equal the artifact, in order"
         assert cap.last_progress == (10, 10, "done")
         assert fake.closes == 1
+        # Pin the line state the way fw/cps/nr are pinned. We assert DTR+RTS,
+        # carried over from the browser flasher; the vendor tool sets neither
+        # (HPISerialPort.cs:88-95) and opens 8N2 where we open 8N1. Both are
+        # deliberate, documented divergences — change them only with hardware.
         assert fake.signals[0] == (True, True), "SCT: DTR+RTS (see _run_sct)"
         assert fake.stopbits == engines.serial.STOPBITS_ONE
     check("sct happy path", t_sct_happy)
@@ -816,11 +830,13 @@ def run_all():
         expect_raises(lambda: engines.plan_sct(SCT_ARTIFACT, bad), "covers 168 of 178")
     check("sct plan tiling gate", t_sct_plan_gate)
 
+    # -- SCT: the opening frame's reply depends on the DSP's parity state -----
     def t_sct_default_baud():
         dev = SctDevice(SCT_MANIFEST)
         fake = _install(None, dev)
         engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
                     on_log=lambda *a: None, on_progress=lambda *a: None)
+        # AnyTone's own D890 procedure and the shipped SCT.ini both say 38400.
         assert fake.opens == [38400], fake.opens
     check("sct opens at the vendor-documented 38400", t_sct_default_baud)
 
@@ -877,6 +893,7 @@ def run_all():
         assert "No erase has been issued" in str(e), str(e)
     check("sct frame-0 wrong reply does not blame the baud", t_sct_first_frame_wrong_reply_does_not_blame_baud)
 
+    # -- SCT: the device's explicit redo request ------------------------------
     def t_sct_redo_request_resent_once():
         cap = Cap()
         dev = SctDevice(SCT_MANIFEST, nak_at=4)      # plan index 4 = the second write
@@ -899,6 +916,8 @@ def run_all():
                         fr = self._take_frame()
                         if fr is None:
                             return
+                        # count only the frame under test — the engine also
+                        # sends parity_restore down this path on the way out
                         if fr == SCT_ARTIFACT[28:58]:
                             self.naks = getattr(self, "naks", 0) + 1
                         ser.feed(SCT_NAK_FRAME)
@@ -922,6 +941,7 @@ def run_all():
         assert "No erase has been issued" in str(e), str(e)
     check("sct does not resend control frames on a NAK", t_sct_redo_not_honoured_for_control_frames)
 
+    # -- SCT: a completed flash is not failed by its own epilogue -------------
     def t_sct_trailing_parity_restore_is_lenient():
         cap = Cap()
         dev = SctDevice(SCT_MANIFEST, wrong_ack_at=9)    # the closing parity_restore
@@ -1008,26 +1028,32 @@ def run_all():
         assert bytes(dev.buf) == b"\xff", dev.buf.hex()
     check("sct device double frames by pad-to-even", t_sct_device_double_pads_to_even)
 
+    # -- SCT precompiler: the erase byte is DERIVED, not tabulated ------------
     def t_sct_region_formula_matches_capture():
         for addr, want in fwupd_sct.CAPTURE_PROVEN_REGIONS.items():
             got = fwupd_sct.REGION_TABLE[addr]
             assert got == want, "%#08x: table %#04x != capture %#04x" % (addr, got, want)
             derived = fwupd_sct.region_byte(fwupd_sct.SEGMENT_ERASE_TYPE[addr])
             assert derived == want, "%#08x: formula %#04x != capture %#04x" % (addr, derived, want)
+        # the two the ladder names but the capture never exercised
         assert fwupd_sct.REGION_TABLE[0x039000] == 0x05
         assert fwupd_sct.REGION_TABLE[0x040000] == 0x0D
+        # ... and the one the vendor's two code paths disagree about
         assert 0x05C000 not in fwupd_sct.REGION_TABLE
+        # bit 0 is the isStart flag: every erase byte is odd, FLASH_END is 0x00
         assert all(v & 1 for v in fwupd_sct.REGION_TABLE.values())
-    check("sct region byte = (erase type << 1) | 1", t_sct_region_formula_matches_capture)
+    check("sct region byte = (InitFlashTypeEnum << 1) | 1", t_sct_region_formula_matches_capture)
 
     def t_sct_pad_to_even():
         r3 = fwupd_sct.HexRecord(0, 0x0100, bytes(3))
         r4 = fwupd_sct.HexRecord(0, 0x0100, bytes(4))
         f3, f4 = fwupd_sct.write_frame(r3), fwupd_sct.write_frame(r4)
+        # 13 + N before the pad: odd N is already even-length and gets no pad
         assert len(f3) == 16 and len(f4) == 18, (len(f3), len(f4))
         assert f4[-1] == 0x00
         assert ((f4[3] << 8) | f4[4]) == 11, "LEN must not count the pad"
         assert ((f3[3] << 8) | f3[4]) == 10
+        # control frames are 8 or 10 bytes — even, never padded
         assert len(fwupd_sct.parity_disable_frame()) == 10
         assert len(fwupd_sct.parity_enable_frame()) == 8
         assert len(fwupd_sct.flash_initial_frame(0x03)) == 10
@@ -1089,6 +1115,7 @@ def run_all():
         f = engines._nr_read_frame(link, 2000)
         assert f["opcode"] == 0x01 and f["raw"] == good
         assert any("CRC mismatch" in m for _, m in logs), logs
+        # ... but a link that ONLY delivers corrupt frames still fails
         fake.feed(bytes(bad) * (engines.NR_MAX_BAD_CRC + 1))
         expect_raises(lambda: engines._nr_read_frame(link, 2000),
                       "in a row were unusable")
@@ -1108,6 +1135,8 @@ def run_all():
                               "did not answer REQ_ENTER_UPDATE_MODE")
             assert "Nothing has been written" in str(e), str(e)
             enter = fwupd_nr.build_frame(0x06)
+            # pin the LITERAL count: asserting against the constant would stay
+            # green if the retry loop were deleted and the constant left behind
             assert engines.NR_ENTER_ATTEMPTS == 5
             assert bytes(fake.tx) == enter * 5, fake.tx.hex()
         finally:

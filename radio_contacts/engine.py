@@ -21,7 +21,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, Iterable, Optional
+from typing import Callable, Iterable, Optional, Tuple
 
 from radio_fw.engines import AbortedError, FirmwareUpdateError, SerialLink
 
@@ -143,14 +143,25 @@ def _read_ident(link: SerialLink, on_log) -> Ident:
     return ident
 
 
-def _exit_program(link: SerialLink, on_log, timeout_ms: int = END_TIMEOUT_MS) -> None:
+def _exit_program(link: SerialLink, on_log, timeout_ms: int = END_TIMEOUT_MS,
+                  wrote: bool = True) -> None:
+    """END the session. The radio leaves PC mode and restarts -- that is what END
+    does, whether or not anything was written, and skipping it would strand the
+    radio in PC mode instead.
+
+    `wrote` is only about the WORDING. Saying "writes, if any, are now committed"
+    after a session that sent no W-frames at all invites the reader to wonder
+    what was written to their radio; on the identify probe we know the answer is
+    nothing, so say so."""
     on_log('TX "END"', "tx")
     link.send(END)
     r = link.read_exactly(1, timeout_ms)
     on_log("RX " + _hex(r), "rx")
     if r[0] != ACK:
         raise ContactWriteError("END was not acknowledged (" + _hex(r) + ")")
-    on_log("left PC mode — writes, if any, are now committed", "ok")
+    on_log("left PC mode — writes, if any, are now committed" if wrote
+           else "left PC mode — nothing was written; the radio restarts on END",
+           "ok")
 
 
 def _write_block(link: SerialLink, addr: int, data: bytes, on_log) -> int:
@@ -188,16 +199,68 @@ def _write_block(link: SerialLink, addr: int, data: bytes, on_log) -> int:
 
 
 # ── public entry points ──────────────────────────────────────────────────────
-def identify(port_name: str, on_log: Callable[[str, str], None],
-             abort: Optional[threading.Event] = None) -> Ident:
-    """Open the port, enter PC mode, read the identity, leave PC mode."""
+def open_session(port_name: str, on_log: Callable[[str, str], None],
+                 abort: Optional[threading.Event] = None) -> Tuple[Ident, SerialLink]:
+    """Enter PC mode, read the identity, and LEAVE THE SESSION OPEN.
+
+    Read-only: the only frames sent are PROGRAM and the 0x02 identity query. No
+    0x57 write frame, so nothing on the radio changes.
+
+    The caller owns the returned link and MUST eventually either hand it to
+    write_contacts() -- which ends it with END -- or close_session() it. Holding
+    it is what saves the operator a restart: END is how a session leaves PC mode
+    and the radio reboots out of it, so identifying and writing as two sessions
+    restarts the radio twice for one job.
+
+    Measured on a D890UV V100 on 2026-09-06: the radio stayed in PC mode through
+    485 s of complete silence and answered 0x02 normally afterwards, so there is
+    no inactivity timeout to race and no keepalive is needed. write_contacts()
+    still falls back to its own handshake if a held link turns out to be dead."""
     link = SerialLink(port_name, on_log=on_log, abort=abort)
     try:
         link.open(BAUD, dtr=True, rts=True)
         link.flush()
         _enter_program(link, on_log)
         ident = _read_ident(link, on_log)
-        _exit_program(link, on_log)
+        return ident, link
+    except BaseException:
+        try:
+            link.close()
+        except BaseException:  # noqa: BLE001
+            pass
+        raise
+
+
+def close_session(link: Optional[SerialLink], on_log: Callable[[str, str], None]) -> None:
+    """End a held session politely and close the port.
+
+    Closing the port WITHOUT END strands the radio in PC mode until it is
+    power-cycled, so END is sent even though it costs the restart we were trying
+    to avoid -- this path only runs when the write is not going to happen."""
+    if link is None:
+        return
+    try:
+        link.abort = None      # a pending operator abort must not block the goodbye
+        _exit_program(link, on_log, timeout_ms=2000, wrote=False)
+    except BaseException:  # noqa: BLE001
+        on_log("the radio did not acknowledge END — if its display still says PC mode, "
+               "power-cycle it", "er")
+    finally:
+        try:
+            link.close()
+        except BaseException:  # noqa: BLE001
+            pass
+
+
+def identify(port_name: str, on_log: Callable[[str, str], None],
+             abort: Optional[threading.Event] = None) -> Ident:
+    """open_session() plus an immediate END: identify and let the radio go.
+
+    For callers that only want to know what is on the other end of the cable.
+    The radio restarts, because END is how a session leaves PC mode."""
+    ident, link = open_session(port_name, on_log, abort)
+    try:
+        _exit_program(link, on_log, wrote=False)
         return ident
     finally:
         link.close()
@@ -208,7 +271,8 @@ def write_contacts(port_name: str, plan: Iterable[seg.Segment],
                    on_progress: Callable[[int, int, str], None],
                    abort: Optional[threading.Event] = None,
                    expect_model: Optional[str] = None,
-                   pace_ms: int = 0) -> dict:
+                   pace_ms: int = 0,
+                   link: Optional[SerialLink] = None) -> dict:
     """One PROGRAM…END session writing every block of `plan` in address order.
 
     `expect_model`, when given, must equal the identity the radio reports NOW
@@ -216,24 +280,57 @@ def write_contacts(port_name: str, plan: Iterable[seg.Segment],
     connected and chose the list for). On abort or a wire error the session is
     still ended with END so the radio leaves PC mode; the error says to re-run.
     Returns {blocks, frames, seconds, retries}.
+
+    `link` is a session already opened by open_session() and still in PC mode.
+    Using it spares the radio the restart that ending the identify session would
+    have caused. It is verified before anything is written -- a fresh 0x02 has to
+    come back -- and if it does not, it is discarded and a normal handshake takes
+    its place. So a held link can only ever save a restart; it can never turn a
+    write that would have worked into one that does not.
+
+    Whoever passes a link hands over ownership: this function closes it.
     """
     segs = list(plan)
     total = seg.block_count(segs)
     if total == 0:
         raise ContactWriteError("the contact bundle is empty — nothing to write")
     on_progress(0, total, "handshake")
-    link = SerialLink(port_name, on_log=on_log, abort=abort)
     written = 0
     frames = 0
     retries = 0
     t0 = time.monotonic()
     in_session = False
+
+    # A session handed to us is only worth having if the radio still answers on
+    # it. Prove that with a read-only 0x02 before trusting it with a write; a
+    # held link that has gone stale is closed and forgotten here, and the normal
+    # handshake below runs as if it had never existed.
+    ident = None
+    if link is not None:
+        link.on_log = on_log
+        link.abort = abort
+        try:
+            link.flush()
+            ident = _read_ident(link, on_log)
+            in_session = True
+        except BaseException:  # noqa: BLE001
+            on_log("the held session did not answer — starting a fresh one", "info")
+            try:
+                link.close()
+            except BaseException:  # noqa: BLE001
+                pass
+            link = None
+            ident = None
+
+    if link is None:
+        link = SerialLink(port_name, on_log=on_log, abort=abort)
     try:
-        link.open(BAUD, dtr=True, rts=True)
-        link.flush()
-        _enter_program(link, on_log)
-        in_session = True
-        ident = _read_ident(link, on_log)
+        if not in_session:
+            link.open(BAUD, dtr=True, rts=True)
+            link.flush()
+            _enter_program(link, on_log)
+            in_session = True
+            ident = _read_ident(link, on_log)
         if expect_model and ident.model != expect_model:
             raise ContactWriteError(
                 f'this radio identifies as "{ident.model}" but the list was chosen for "{expect_model}" — '
@@ -264,10 +361,15 @@ def write_contacts(port_name: str, plan: Iterable[seg.Segment],
         # the next refresh overwrites it — and the codeplug was never touched.
         if in_session:
             try:
-                on_log("ending the session so the radio leaves PC mode "
-                       "(the contact list is only partly written — run the refresh again)", "er")
+                # Only claim a partial write when blocks actually went out. The
+                # model gate and the empty-plan check both refuse BEFORE the
+                # first frame, and telling an operator their contact list is
+                # half-written when nothing was sent is its own small harm.
+                on_log("ending the session so the radio leaves PC mode"
+                       + (" (the contact list is only partly written — run the refresh again)"
+                          if written else " (nothing was written)"), "er")
                 link.abort = None          # the operator's abort must not block this last exchange
-                _exit_program(link, on_log, timeout_ms=2000)
+                _exit_program(link, on_log, timeout_ms=2000, wrote=bool(written))
             except BaseException:  # noqa: BLE001
                 on_log("the radio did not acknowledge END — power-cycle it, then run the refresh again", "er")
         if isinstance(e, AbortedError):

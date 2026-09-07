@@ -487,8 +487,23 @@ NR_BAUD_LADDER = {9600: 10000, 10000: 115200, 115200: 115200}
 NR_LEN_NOTIFY_REPLY = _nr.build_frame(NR_OP["STOP"])   # aa55010003e7a2 (opcode 0x03, certain bytes)
 NR_IDLE_TIMEOUT_MS = 20000
 NR_MAX_RESYNC_DROP = 256
+# A corrupt frame is dropped and re-requested, but a link that only ever
+# delivers corrupt frames is not noisy, it is broken.
 NR_MAX_BAD_CRC = 8
+# The board's longest frame is the 15-byte READ request (opcode + two u32); a
+# declared body larger than this is a corrupted length field, not a frame. It
+# matters because the length is read BEFORE the CRC can vet it: trusting a
+# corrupt one makes us wait for — and then swallow — the good frames behind it.
 NR_MAX_DEVICE_PAYLOAD = 32
+# ENTER is the ONE frame the board cannot ask for again: until it receives one
+# the board is passive, so a lost ENTER hangs us where the vendor recovers. The
+# vendor re-drives every frame on a 2 s AutoReset timer, 5 attempts
+# (BootHelper.cs:81-85, :296-312, cntRetry = 5 at :44); we copy that for ENTER
+# alone. Doing it for the rest would inject duplicate read-response payloads the
+# capture never shows a host sending — and the vendor's own retry block never
+# touches its pass counter (:296-312), so it resends across a baud change at the
+# NEW rate while the board is still on the old one. That is a vendor hazard, not
+# a behaviour to port.
 NR_ENTER_ATTEMPTS = 5
 NR_ENTER_RETRY_TIMEOUT_MS = 2000
 PROGRESS_EVERY_READS = 16
@@ -501,10 +516,10 @@ def _build_nr_frame(opcode: int, payload: bytes = b"") -> bytes:
 def _nr_read_frame(link: SerialLink, timeout_ms: int) -> dict:
     """One complete, CRC-valid frame off the byte stream.
 
-    A frame that fails its CRC is DROPPED, not fatal. The factory tool does the
-    same: a frame that fails verification leaves its state machine waiting
-    without stopping its retry timer, so the exchange is simply re-driven.
-    Raising here instead would end a 982-read
+    A frame that fails its CRC is DROPPED, not fatal. The vendor does the same:
+    `if (!packageHelper.Verify) break;` (BootHelper.cs:236-239) leaves the state
+    machine in WaitResponse1 without stopping its 2 s retry timer, so the
+    exchange is simply re-driven. Raising here instead would end a 982-read
     session mid-image — the one outcome that needs the emergency PF3+PF1 entry
     to recover from. The board re-requests anything it does not get, so a
     dropped frame costs a round trip and nothing else.
@@ -610,6 +625,9 @@ def _run_nr(port_name: str, artifact: bytes, manifest: dict, on_log, on_progress
         link.open(link_meta.get("initial_baud") or 9600, dtr=True, rts=True)   # NR: DTR+RTS
         link.flush()
 
+        # ENTER is the one frame the board cannot re-request, so it is the one
+        # frame we retry (NR_ENTER_ATTEMPTS). Nothing is written until the board
+        # answers, so retrying here is free.
         pending = None
         for attempt in range(1, NR_ENTER_ATTEMPTS + 1):
             on_log("TX " + _hex(enter_frame) + " REQ_ENTER_UPDATE_MODE"
@@ -685,6 +703,12 @@ def _run_nr(port_name: str, artifact: bytes, manifest: dict, on_log, on_progress
                         + "), expected 8 = u32 LE offset + u32 LE count.")
                 off = _read_u32le(payload, 0)
                 count = _read_u32le(payload, 4)
+                # A zero-length request is legal and self-describing: the vendor
+                # answers it with a bare 9-byte payload and no data
+                # (BootHelper.cs:172-184), and our own fwupd_nr.serve() already
+                # does the same. Only a request that runs off the end of the
+                # .ufw is refused — answering that short or zero-padded really
+                # would write garbage.
                 if count and off + count > len(artifact):
                     raise FirmwareUpdateError(
                         "the board requested " + str(count) + " byte(s) at 0x" + format(off, "x")
@@ -778,13 +802,31 @@ def _run_nr(port_name: str, artifact: bytes, manifest: dict, on_log, on_progress
 # ═══════════════════════════════════════════════════════════════════════════
 # SCT3288 baseband DSP — host push, its own framing
 # ═══════════════════════════════════════════════════════════════════════════
+# The host baud is NOT in the capture (its only control transfers are USBPcap's
+# synthetic already-attached descriptor replay, so the port was open before the
+# trace began). It is settled instead by two independent pieces of vendor
+# evidence, both naming 38400 for THIS radio:
+#   * "3288 base band upgrade.pdf", AnyTone's own D890 procedure: the Config
+#     dialog is shown at "Port Rate: 38400", the Flash Update window header
+#     reads "COM8  BaudRate: 38400", and the run log beneath it is a SUCCESSFUL
+#     flash ("DownLoad UserFlash Code Successful!", vocoders 1-3, ...);
+#   * the shipped SCT.ini persists "Baud Rate=38400" on all four [Port Setup]
+#     profiles.
+# 115200 is only the generic SiCOMM tool's own default (HPISerialPort.cs:11
+# `_baudRate = 115200`, FormSelectPort.cs:211 combo default; the picker offers
+# 115200/38400/19200/9600), i.e. what the dialog shows before an operator
+# chooses. The tab still lets the operator pick either (gui_tab.py).
 SCT_BAUD = 38400
 SCT_ALT_BAUD = 115200
 SCT_ACK_TIMEOUT_MS = 3000
 SCT_ERASE_TIMEOUT_MS = 15000
+# Once a reply's header is in hand the rest of it is already on the wire.
 SCT_REPLY_BODY_TIMEOUT_MS = 1000
 SCT_MAGIC = b"\x84\xa9\x61"
 SCT_MAX_REPLY_LEN = 64          # every known reply body is 2 or 4 bytes
+# Device reply "receive do command error, resend command again": body opcode
+# 0x17 with sub-code 3 or 6. The vendor resends the frame ONCE and then gives
+# up (SCT3252.cs:4479-4520; maxCount = 2 at WritFlash :2175 / InitFlash :2235).
 SCT_NAK_OPCODE = 0x17
 SCT_NAK_SUBCODES = (0x03, 0x06)
 SCT_RESENDABLE = ("write", "flash_initial", "flash_end")
@@ -894,6 +936,23 @@ def _run_sct(port_name: str, artifact: bytes, manifest: dict, on_log, on_progres
     _verify_artifact(artifact, manifest, on_log)
     on_progress(0, len(plan), "handshake")
 
+    # Frame 0 is the opening `16 00`, and the DSP's answer to it depends on the
+    # parity state it is ALREADY in, which we do not control:
+    #   * parity OFF (a fresh session)  -> 17 06, the vendor's "command error"
+    #   * parity ON  (a previous run of ours aborted mid-session and left it on)
+    #                                   -> the 10-byte echo, our ACK_SEG_PARITY
+    # Our own compiler knows this: it emits this byte-identical frame twice with
+    # two different expected ACKs (fwupd_sct compile_stream). Accepting only the
+    # first made every in-tool Retry fail at frame 0 — and blame the baud. The
+    # vendor gates on neither: SetupParityCheck reads the reply and discards it
+    # (SCT3252.cs:5779-5789).
+    #
+    # The closing `16 00` is the same frame and carries the parity-ON reply, so
+    # the plan's own last step supplies both the alternative ACK and the frame
+    # to send on the way out. On a failure the vendor sends it too — every one
+    # of its abort branches restores the entering parity state
+    # (SCT3252.cs:3436/:3452/:3459/:3468) — so a later run does not meet a DSP
+    # left in the other mode.
     alt_first_ack = None
     parity_restore_frame = None
     for step in plan:
@@ -904,6 +963,15 @@ def _run_sct(port_name: str, artifact: bytes, manifest: dict, on_log, on_progres
     link = SerialLink(port_name, on_log=on_log, abort=abort)
     committed = False        # has an erase been issued? (nothing is recoverable after)
     try:
+        # DTR/RTS: carried over from the browser flasher this engine ports
+        # (channelBuddy assets/js/firmware-update-serial.js), which could not
+        # deassert DTR even in principle. The vendor tool sets neither — it
+        # assigns only PortName, BaudRate, StopBits and ReadBufferSize before
+        # Open (HPISerialPort.cs:88-95), leaving both lines LOW — and it opens
+        # 8N2, where we open 8N1 (SerialLink.open). Both differences are
+        # untested on hardware and neither has ever been implicated in a
+        # failure, so they are documented here rather than changed blind; the
+        # stop-bit one is the one that actually rides in SET_LINE_CODING.
         link.open(baud, dtr=True, rts=True)
         link.flush()
         on_log("SCT3288: " + str(manifest.get("frames")) + " write frames + "
@@ -926,6 +994,14 @@ def _run_sct(port_name: str, artifact: bytes, manifest: dict, on_log, on_progres
                 on_log("TX " + kind + " " + _hex(frame), "tx")
             link.send(frame)
             if is_erase:
+                # The moment the erase command LEAVES THE HOST, not when it is
+                # acknowledged. The DSP answers a FLASH_INITIAL only after the
+                # physical region erase (the vendor allows 15 s for it —
+                # SCT3252.cs:2205), so a timeout or a bad reply here means the
+                # erase is in flight or already done. Setting this after the ACK
+                # would make a failed erase report "nothing on the baseband has
+                # been changed", which is the one thing we must never tell an
+                # operator about a half-erased DSP.
                 committed = True
 
             attempt = 0
@@ -937,6 +1013,9 @@ def _run_sct(port_name: str, artifact: bytes, manifest: dict, on_log, on_progres
                 except AbortedError:
                     raise
                 except FirmwareUpdateError as e:
+                    # Two shapes reach here: no reply at all (ReplyTimeoutError)
+                    # and a reply we cannot frame. Both are link-layer symptoms
+                    # at frame 0, and both are harmless on the closing frame.
                     if lenient:
                         on_log(str(e) + " — but the flash itself is complete and acknowledged; "
                                "only the closing parity restore went unanswered. Continuing.", "er")
@@ -954,6 +1033,11 @@ def _run_sct(port_name: str, artifact: bytes, manifest: dict, on_log, on_progres
                         + _sct_state_note(committed))
                 if r in accepted:
                     break
+                # The device explicitly asking for the frame again — the one
+                # reply the vendor recovers from, and only for write/erase
+                # frames. Checked AFTER the expected-ACK compare, because
+                # frame 0's success ACK is itself a 17 06. Bounded to ONE
+                # resend, exactly as the vendor's maxCount = 2.
                 if (_sct_is_redo_request(r) and kind in SCT_RESENDABLE
                         and attempt == 1):
                     on_log("RX " + _hex(r) + " — the SCT3288 asked for frame " + str(i)
@@ -961,6 +1045,9 @@ def _run_sct(port_name: str, artifact: bytes, manifest: dict, on_log, on_progres
                     link.send(frame)
                     continue
                 if lenient:
+                    # Everything is already committed and ACKed; the vendor's
+                    # counterpart only flips a host-side flag. Failing here
+                    # would report a completed flash as a failure.
                     on_log("RX " + _hex(r) + " — unexpected reply to the closing parity restore. "
                            "The flash itself is complete and acknowledged; continuing.", "er")
                     break
@@ -980,6 +1067,18 @@ def _run_sct(port_name: str, artifact: bytes, manifest: dict, on_log, on_progres
                "protocol has no read-back or verify step.", "ok")
         on_progress(len(plan), len(plan), "done")
     except FirmwareUpdateError:
+        # Leave the DSP's parity where we found it so the operator's retry —
+        # and any later vendor-tool session — opens against a known state.
+        # This runs on an operator abort too (AbortedError is a
+        # FirmwareUpdateError), and it has to bypass the abort gate to do it:
+        # SerialLink.send() checks the abort flag first, so with the flag set
+        # the restore would be swallowed by the except below and never reach
+        # the wire — leaving parity ON in exactly the case that motivated it.
+        # One 10-byte control frame after an abort is what the vendor's own
+        # failure exits send (SCT3252.cs:3436/:3452/:3459/:3468). It does NOT
+        # send the vendor's preceding FLASH_END: issuing an erase-family
+        # command on the way out of a failure is not something any capture
+        # justifies.
         if parity_restore_frame is not None and link.ser is not None:
             on_log("TX parity_restore " + _hex(parity_restore_frame)
                    + " (restoring the DSP's parity state on the way out)", "tx")

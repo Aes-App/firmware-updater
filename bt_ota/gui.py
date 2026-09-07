@@ -24,7 +24,7 @@ from .client import MODELS, firmware_kind, make_client, scan_devices
 APP_TITLE = "AesApp Radio Updater"
 VENDOR = "AesApp Inc."
 WEBSITE = "https://aes.app/"
-VERSION = "0.8.0"
+VERSION = "0.8.1"
 LOG_PREFIX = "[aesapp]"
 
 # Report this version to the firmware server on its API queries (User-Agent + a
@@ -866,6 +866,14 @@ def main(url: str | None = None):
                 "Quit during a write?",
                 "An update is in progress. Quitting now can leave a radio unbootable.\n\nQuit anyway?"):
             return
+        # The Digital Contact tab may be holding the radio in PC mode between
+        # Connect and Write. Closing the port without END would leave it there
+        # until the operator power-cycled it, so say goodbye properly.
+        if contacts is not None:
+            try:
+                contacts.release_radio()
+            except Exception:
+                pass
         app.stop()
         if instance is not None:
             instance.close()

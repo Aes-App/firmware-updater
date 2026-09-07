@@ -1,7 +1,8 @@
 """The radio/board update targets per model, and how the desktop app treats each.
 
 Mirrors the AesApp web CPS's firmware-bundle model: one row per target, compiled
-from the same vendor files by the precompilers in radio_fw/vendor/fwupd_*.
+from the same vendor files by the precompilers in radio_fw/vendor/fwupd_* (which
+are a fork of the server's, not a copy — see the FORK NOTICE in compiler.py).
 
 Two radios are supported here, chosen by a model radio button in the tab:
   D890UV    — Radio Firmware, Icons & Fonts, SCT3288 Baseband, NR Board

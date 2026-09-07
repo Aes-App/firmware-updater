@@ -197,6 +197,7 @@ def test_owned_rows_ride_the_same_filter_and_lead_the_dropdown():
                 "owned": True, "listName": "Ontario + BC"}
     owned_dmr = dict(owned_nx, id=90, kind="dmr", format="anytone_890", recordCount=3449,
                      artifactUrl="/api/contacts/u/90/artifact")
+    # Owned DMR first, prebuilt in the middle, owned NXDN last — the real order.
     cat = dict(_CATALOG, bundles=[owned_dmr] + list(_CATALOG["bundles"]) + [owned_nx])
     r890 = catalog.radio_entry(cat, "D890UV")
     assert [b["id"] for b in catalog.bundles_for(cat, r890, "dmr")] == [90, 3], \

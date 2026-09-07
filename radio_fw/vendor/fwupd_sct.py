@@ -10,8 +10,9 @@ device 15):
     XOR      = 1-byte XOR of LEN_hi .. 0x2F inclusive (LEN, MOD, CMD, args, 2F)
 
 The trailing 0x00 is a PAD TO AN EVEN FRAME LENGTH, not a property of write
-frames: the factory tool appends it, uncounted by LEN, to any finished frame
-whose total length is odd. A write frame is 13 + N bytes, so
+frames: the vendor appends it, uncounted by LEN, to any finished frame whose
+total length is odd (`if (cmd.Length % 2 != 0) Array.Resize(ref cmd,
+cmd.Length + 1);` -- SCT3252.cs:3936-3942). A write frame is 13 + N bytes, so
 every EVEN payload N gets the pad and every odd N does not; all four control
 frames are 8 or 10 bytes and never do. That reproduces the capture exactly
 (1,343/1,343 write frames padded -- every record in the vendor hex has an even
@@ -19,9 +20,9 @@ length) while staying correct for an odd-length record.
 
     94 | bank | addr_hi | addr_lo | count | <count data bytes> | 2F | XOR [| 00]
 
-(The vendor's own .prog scripts are NOT evidence either way: they take a
-different code path that never pads, so those lines are unpadded regardless of
-length.)
+(The vendor's own .prog scripts are NOT evidence either way: PWritFlash reaches
+PAddParity, never SendCmd (SCT3252.cs:7716-7737, :7546-7557), so the .prog lines
+are unpadded regardless of length.)
 
 Source file: Intel HEX with a NON-STANDARD type-04. The Extended Linear Address
 records carry ZERO data bytes and put the BANK NUMBER in the ADDRESS field
@@ -46,7 +47,7 @@ DIS-contiguous jump in the record stream (7 segments in the V3_01_01A6 file,
 marked in the hex by type-04 records -- including a redundant same-bank one) is
 preceded by a `16 01` (with parity) + FLASH_INITIAL(region) pair, and the
 session closes with `16 01` + FLASH_INITIAL(0x00) (= FLASH_END) + `16 00`.
-The region byte is `1 | (erase type << 1)` over a hard-coded segment-start
+The region byte is `1 | (InitFlashTypeEnum << 1)` over a hard-coded segment-start
 ladder -- see REGION_TABLE below. An unknown segment start is a HARD ERROR:
 erasing the wrong region can brick the baseband, so a segment the vendor ladder
 does not name is refused rather than guessed.
@@ -74,6 +75,11 @@ ACK_FLASH_INITIAL = "84a96100040093002fb8"   # also ACKs FLASH_END
 ACK_SEG_PARITY = "84a96100040016002f3d"      # reply to in-session 16 01 / 16 00
 ACK_WRITE = "84a96100040394002fbc"
 
+# InitFlashTypeEnum members the SCT3288 (VersionsEnum.DMR_T2) ladder uses.
+# The enum is OUT OF NUMERIC ORDER in the vendor source -- Vocode5 = 15 while
+# Vocode6/7/8 = 12/13/14 (InitFlashTypeEnum.cs) -- which is exactly why an
+# address-only pattern search over the region bytes finds nothing: the byte
+# tracks the ENUM MEMBER, not the address.
 ERASE_USER_FLASH_WITH_VOCODE = 1
 ERASE_SYSTEM_FLASH = 2
 ERASE_VOCODE3 = 3
@@ -86,15 +92,39 @@ ERASE_VOCODE5 = 15
 
 
 def region_byte(erase_type: int) -> int:
-    """The FLASH_INITIAL region byte for an erase type.
+    """The FLASH_INITIAL region byte for an InitFlashTypeEnum member.
 
-    Bit 0 is the isStart flag and the erase type sits in bits 1..7. FLASH_END is
+    Vendor (SCT_Device.dll, SICOMM.Wangjunhua.SCT3252.InitFlash, decompiled at
+    SCT3252.cs:2224-2226)::
+
+        cmd[1] = (byte)(isStart ? 1u : 0u);
+        cmd[1] |= (byte)((int)initType << 1);
+
+    so bit 0 is the isStart flag and the enum sits in bits 1..7. FLASH_END is
     the same command with isStart false and no type, i.e. region byte 0x00.
     """
     return ((erase_type << 1) | 1) & 0xFF
 
 
+#: Which erase region each dis-contiguous segment start belongs to, from the
+#: vendor's hard-coded ladder for VersionsEnum.DMR_T2 -- the SCT3288/D890
+#: profile (SCT3252.cs:3248-3420). Keyed by linear (bank<<16 | addr16).
 #:
+#: Seven of these nine are independently confirmed byte-for-byte by the
+#: D890_SCT3288.pcapng capture; test_sct_region_table_matches_vendor_formula
+#: is the gate that keeps table and formula in step. 0x039000 and 0x040000 come
+#: from the same ladder but the V3_01_01A6 hex never exercises them.
+#:
+#: DELIBERATELY ABSENT -- 0x05C000 ("Vocoder8"): the vendor's two code paths
+#: disagree. The live flasher passes EraseVocode7Flash (SCT3252.cs:3406-3414,
+#: under a message string reading "Vocoder8" -- the branch is a verbatim clone
+#: of the 0x056000 block), while the .prog generator passes EraseVocode8Flash
+#: (:8045-8048). Erasing the wrong region bricks the DSP and no capture settles
+#: it, so compile_stream() refuses that segment rather than pick a side.
+#:
+#: SCOPE: DMR_T2 / SCT3288 only. The same ladder maps 0x000100 to
+#: EraseUserFlashNoVocode when _scttitletype == "SCT3917" (SCT3252.cs:3267-3269),
+#: and the DMR_T1 / DPMR profiles use entirely different addresses.
 SEGMENT_ERASE_TYPE: Dict[int, int] = {
     0x000100: ERASE_USER_FLASH_WITH_VOCODE,   # "DownLoad UserFlash Code"
     0x022000: ERASE_VOCODE1,                  # "DownLoad Vocoder1 Code"
@@ -107,12 +137,21 @@ SEGMENT_ERASE_TYPE: Dict[int, int] = {
     0x077000: ERASE_VOCODE5,                  # "DownLoad Vocoder5 Code"
 }
 
+#: FLASH_INITIAL erase-region IDs, keyed by segment start address.
 REGION_TABLE: Dict[int, int] = {
     addr: region_byte(t) for addr, t in SEGMENT_ERASE_TYPE.items()
 }
 
+#: EVERY address the vendor's DMR_T2 ladder erases on, including the one we
+#: refuse to compile. The two sets must not be conflated: REGION_TABLE answers
+#: "what erase byte do we send here", this answers "would the vendor erase
+#: here at all" -- and that second question is the one the guards ask, so that
+#: 0x05C000 is refused in BOTH positions (as a segment start AND as an address
+#: a contiguous run walks into) rather than silently written un-erased.
 VENDOR_LADDER_BASES = frozenset(SEGMENT_ERASE_TYPE) | {0x05C000}
 
+#: The seven values the capture proves, as a standing regression gate. If the
+#: formula above and these ever disagree, the CAPTURE wins -- it is the wire.
 CAPTURE_PROVEN_REGIONS: Dict[int, int] = {
     0x000100: 0x03,
     0x022000: 0x0B,
@@ -226,8 +265,9 @@ def build_frame(mod: int, body: bytes, *, parity: bool = True) -> bytes:
     LEN counts body (CMD..args) plus, when parity is on, the 2F marker and the
     XOR byte -- but never the MOD byte. XOR covers LEN_hi..0x2F inclusive.
 
-    The final 0x00 is the PAD TO EVEN and is not counted by LEN: it is applied
-    to every frame whose total length is odd, after the parity bytes.
+    The final 0x00 is the vendor's PAD TO EVEN and is not counted by LEN:
+    `if (cmd.Length % 2 != 0) Array.Resize(ref cmd, cmd.Length + 1);`
+    (SCT3252.cs:3936-3942), applied to every frame after the parity bytes.
     """
     length = len(body) + (2 if parity else 0)
     frame = bytearray(MAGIC)
@@ -303,13 +343,21 @@ def compile_stream(records: List[HexRecord]) -> Tuple[bytes, dict]:
         if records[i].linear not in REGION_TABLE:
             raise SctHexError(
                 f"segment starting at linear address {records[i].linear:#08x} "
-                f"is not in the known SCT3288 erase ladder, so no "
-                f"FLASH_INITIAL erase region is known for it. Erasing the "
-                f"wrong region can brick the baseband, so this is refused "
-                f"rather than guessed. If the factory tool really does flash "
-                f"this layout, add the address and its erase type to "
+                f"is not in the vendor's SCT3288 erase ladder "
+                f"(SCT3252.cs:3248-3420), so no FLASH_INITIAL erase region is "
+                f"known for it. Erasing the wrong region can brick the "
+                f"baseband, so this is refused rather than guessed. If the "
+                f"vendor tool really does flash this layout, add the address "
+                f"and its InitFlashTypeEnum to "
                 f"radio_fw.vendor.fwupd_sct.SEGMENT_ERASE_TYPE.")
 
+    # The vendor triggers an erase on EXACT EQUALITY with a region base, tested
+    # against every record and never against contiguity (SCT3252.cs:3181 +
+    # ladder). We trigger on discontinuity instead, which agrees on every
+    # vendor file on disk. Where they could diverge -- a section that runs
+    # byte-exactly into the next region base -- the vendor erases and we would
+    # not, writing into un-erased NOR. Refuse that layout instead of silently
+    # differing; no shipping file reaches this.
     for i, rec in enumerate(records):
         if i not in start_set and rec.linear in VENDOR_LADDER_BASES:
             raise SctHexError(
@@ -412,7 +460,7 @@ def compile_stream(records: List[HexRecord]) -> Tuple[bytes, dict]:
             "SCT_PORT tool sends them; strict 1:1 ACK discipline, expected "
             "ACK bytes in session/controls. frame_index rows are "
             "[offset, length, kind]; 'frames' counts write frames only. "
-            "Erase-region IDs are derived as (erase type << 1) | 1 over "
+            "Erase-region IDs are derived as (InitFlashTypeEnum << 1) | 1 over "
             "the vendor's DMR_T2 segment ladder (see REGION_TABLE)."
         ),
     }

@@ -325,6 +325,8 @@ class RadioBoardsTab:
         self._abort: threading.Event | None = None
         self._step_img = None       # keep a ref so Tk doesn't GC the photo
         self._last_port = None
+        # 38400 is what AnyTone's own D890 3288 procedure and the shipped
+        # SCT.ini both use; 115200 is only the generic SiCOMM tool's default.
         self._sct_baud = tk.StringVar(value=str(engines.SCT_BAUD))
 
         self._build()

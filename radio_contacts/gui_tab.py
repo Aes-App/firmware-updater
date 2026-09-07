@@ -24,6 +24,9 @@ from radio_fw.engines import AbortedError
 from . import catalog, engine, launch
 from . import segments as seg
 
+# What the log line is about before the radio has identified itself.
+_LOG_SOURCE = "Digital Contact"
+
 _LOG_TAGS = {"tx": "#0b5fff", "rx": "#7a3fb0", "ok": "#127a2e", "er": "#b00020", "error": "#b00020",
              "info": "#444"}
 _NO_SESSION_TEXT = ("Start from the Tools page on cps.aes.app — the “Open in AesApp Radio Updater” "
@@ -57,6 +60,10 @@ class ContactRefreshTab:
         self._last_port: Optional[str] = None
         self._busy = False          # a connect / session / catalog worker is running
         self._writing = False
+        # A PC-mode session opened by Connect and kept open until the write uses
+        # it, so the radio restarts once for a job instead of twice. Owned by the
+        # UI thread; handed to the write worker, which then owns and closes it.
+        self._held = None
         self._abort: Optional[threading.Event] = None
         self._build()
         self.root.after(80, self._drain)
@@ -69,10 +76,23 @@ class ContactRefreshTab:
         try:
             while True:
                 kind, payload = self._q.get_nowait()
-                self._handle(kind, payload)
+                try:
+                    self._handle(kind, payload)
+                except Exception as e:  # noqa: BLE001
+                    # One malformed message must not take the tab down with it.
+                    # Before this, any exception here escaped _drain and the
+                    # re-arm below never ran, so the whole pump stopped: the log
+                    # froze mid-handshake and the UI sat on its last label for
+                    # ever, with the traceback going only to a stderr nobody
+                    # sees in a windowed app.
+                    try:
+                        self._log(f"internal error handling {kind!r}: {e}", "er")
+                    except Exception:  # noqa: BLE001
+                        pass
         except queue.Empty:
             pass
-        self.root.after(80, self._drain)
+        finally:
+            self.root.after(80, self._drain)
 
     def _handle(self, kind, payload):
         if kind == "log":
@@ -112,14 +132,25 @@ class ContactRefreshTab:
             self._refresh_write_state()
         elif kind == "ident_ok":
             self._busy = False
-            self.ident = payload
+            self.ident, self._held = payload
             self.connect_btn.state(["!disabled"])
             self.ident_lbl.configure(
-                text=f"Connected: {payload.model or '?'} {payload.version}".strip(), foreground="#127a2e")
+                text=f"Connected: {self.ident.model or '?'} {self.ident.version}".strip(),
+                foreground="#127a2e")
             self._refresh_radio_state()
+        elif kind == "disconnected":
+            self._busy = False
+            self.ident = None
+            self.radio = None
+            self._held = None
+            self.connect_btn.state(["!disabled"])
+            self.ident_lbl.configure(text="Not connected.", foreground="#666")
+            self._populate_lists()
+            self._refresh_write_state()
         elif kind == "ident_err":
             self._busy = False
             self.ident = None
+            self._held = None
             self.radio = None
             self.connect_btn.state(["!disabled"])
             self.ident_lbl.configure(text=str(payload), foreground="#b00020")
@@ -188,6 +219,13 @@ class ContactRefreshTab:
         ttk.Button(prow, text="Refresh", command=self._refresh_ports).pack(side="left")
         self.connect_btn = ttk.Button(prow, text="Connect", command=self._on_connect)
         self.connect_btn.pack(side="left", padx=(6, 0))
+        # Connect leaves the radio in PC mode so the write can reuse the session
+        # without a second restart. Someone who then decides NOT to write needs a
+        # way out that is not "quit the app" or "pull the cable": both leave the
+        # radio sitting in PC mode until it is power-cycled.
+        self.disconnect_btn = ttk.Button(prow, text="Disconnect", command=self._on_disconnect,
+                                         state="disabled")
+        self.disconnect_btn.pack(side="left", padx=(6, 0))
         self.ident_lbl = ttk.Label(rad, text="Not connected.", foreground="#666", wraplength=660,
                                    justify="left")
         self.ident_lbl.pack(fill="x", padx=8, pady=(0, 6))
@@ -339,14 +377,34 @@ class ContactRefreshTab:
         self.connect_btn.state(["disabled"])
         self.ident_lbl.configure(text="Connecting…", foreground="#444")
         self._refresh_write_state()
-        threading.Thread(target=self._ident_worker, args=(port,), daemon=True).start()
+        held, self._held = self._held, None      # the worker retires it off the UI thread
+        threading.Thread(target=self._ident_worker, args=(port, held), daemon=True).start()
 
-    def _ident_worker(self, port):
+    def _ident_worker(self, port, previous=None):
+        log = lambda m, c="info": self._post("log", (m, c))   # noqa: E731
+        # Reconnecting means the old session is finished with. END it rather than
+        # dropping the port, or the radio sits in PC mode until it is power-cycled.
+        engine.close_session(previous, log)
         try:
-            ident = engine.identify(port, on_log=lambda m, c="info": self._post("log", (m, c)))
-            self._post("ident_ok", ident)
+            ident, link = engine.open_session(port, on_log=log)
+            self._post("ident_ok", (ident, link))
         except Exception as e:  # noqa: BLE001
             self._post("ident_err", str(e))
+
+    def _on_disconnect(self):
+        if self._writing or self._held is None:
+            return
+        held, self._held = self._held, None
+        self._busy = True
+        self.disconnect_btn.state(["disabled"])
+        self.connect_btn.state(["disabled"])
+        self.ident_lbl.configure(text="Releasing the radio…", foreground="#444")
+        threading.Thread(target=self._disconnect_worker, args=(held,), daemon=True).start()
+
+    def _disconnect_worker(self, held):
+        log = lambda m, c="info": self._post("log", (m, c))   # noqa: E731
+        engine.close_session(held, log)      # END, then close: never just drop the port
+        self._post("disconnected", None)
 
     def _refresh_radio_state(self):
         """Re-evaluate the radio row against the catalog (either may arrive
@@ -399,6 +457,10 @@ class ContactRefreshTab:
         if nx:
             self._nx_map = dict(nx)
             self.nx_box["values"] = [lab for lab, _b in nx]
+            # Index 0 on purpose, and the server decides what lands there: it
+            # puts owned DMR rows first but owned NXDN rows LAST, so an
+            # untouched checkbox still writes the worldwide list exactly as it
+            # did before pickers existed. Choosing your own is one click.
             self.nx_box.current(0)
             if len(nx) > 1:
                 # More than one NXDN list only happens once the operator has
@@ -445,6 +507,12 @@ class ContactRefreshTab:
         self.write_btn.state(["!disabled"] if ok else ["disabled"])
         self.link_btn.state(["disabled"] if (self._busy or self._writing) else ["!disabled"])
         self.nx_box.state(["disabled"] if self._writing else ["!disabled"])
+        # Offered only while there is really a session to end: not before
+        # Connect, not during a write, and not after one (the write's own END
+        # already released the radio).
+        self.disconnect_btn.state(
+            ["!disabled"] if (self._held is not None and not self._busy and not self._writing)
+            else ["disabled"])
 
     # ---- write --------------------------------------------------------------
     def _on_write(self):
@@ -474,11 +542,15 @@ class ContactRefreshTab:
         self.progress["value"] = 0
         self.wstatus.configure(text="Preparing…", foreground="#444")
         self._refresh_write_state()
+        # Ownership moves to the worker: write_contacts() closes whatever it is
+        # given, so the tab must not keep a second reference to it.
+        held, self._held = self._held, None
         threading.Thread(target=self._write_worker,
-                         args=(port, self.base_url, self.token, b, nx, self.ident.model, self._abort),
+                         args=(port, self.base_url, self.token, b, nx, self.ident.model,
+                               self._abort, held),
                          daemon=True).start()
 
-    def _write_worker(self, port, base, token, bundle, nx_bundle, model, abort):
+    def _write_worker(self, port, base, token, bundle, nx_bundle, model, abort, held=None):
         log = lambda m, c="info": self._post("log", (m, c))   # noqa: E731
         try:
             plans = []
@@ -498,14 +570,21 @@ class ContactRefreshTab:
                 port, plan,
                 on_log=log,
                 on_progress=lambda d, t, p: self._post("progress", (d, t, p)),
-                abort=abort, expect_model=model)
+                abort=abort, expect_model=model, link=held)
+            held = None                      # write_contacts closed it
             self._post("write_done", summary)
         except AbortedError as e:
+            held = None                      # write_contacts closed it on its way out
             self._post("write_err", (str(e), True))
         except (catalog.ContactsError, seg.SegmentError) as e:
             self._post("write_err", (str(e), False))
         except Exception as e:  # noqa: BLE001
             self._post("write_err", (str(e), False))
+        finally:
+            # Only reached with a link still open when the download failed before
+            # write_contacts was ever called. Give the radio its END back.
+            if held is not None:
+                engine.close_session(held, log)
 
     def _on_write_done(self, summary: dict):
         self._writing = False
@@ -540,7 +619,11 @@ class ContactRefreshTab:
 
     # ---- log ----------------------------------------------------------------
     def _log(self, msg, cls="info"):
-        model = self.ident.model if self.ident is not None else "—"
+        # The bracket names whoever the line is about: the radio once it has told
+        # us what it is, and this tab before that. It used to fall back to an em
+        # dash, which reads as "something is missing" on precisely the lines that
+        # run BEFORE the identity comes back -- the whole connect handshake.
+        model = self.ident.model if self.ident is not None else _LOG_SOURCE
         line = "[" + time.strftime("%H:%M:%S") + "] [" + model + "] " + msg
         self.log.configure(state="normal")
         tag = cls if cls in _LOG_TAGS else ""
@@ -551,3 +634,10 @@ class ContactRefreshTab:
     # ---- window-close hook (called by main) ---------------------------------
     def is_writing(self) -> bool:
         return self._writing
+
+    def release_radio(self) -> None:
+        """END any session Connect is holding, so quitting never leaves the radio
+        stuck in PC mode. Safe to call when nothing is held."""
+        held, self._held = self._held, None
+        if held is not None:
+            engine.close_session(held, lambda m, c="info": None)
