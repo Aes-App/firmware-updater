@@ -782,6 +782,11 @@ def main(url: str | None = None):
                        + "\n\nThe Bluetooth Module Update tab is unaffected.").pack(padx=16, pady=16)
 
     # The Digital Contact Refresh tab, opened from the Tools page on cps.aes.app.
+    # HIDDEN until a contacts link arrives, for the same reason the Write Codeplug
+    # tab is: the list to write comes from the server with the link, so there is
+    # nothing to start here without one, and an always-visible tab reads as a
+    # feature you can begin from the app. Built at startup and hide()den, so it is
+    # ready the instant a link lands.
     contacts_page = ttk.Frame(nb)
     nb.add(contacts_page, text="Digital Contact Refresh")
     contacts = None
@@ -792,6 +797,7 @@ def main(url: str | None = None):
         ttk.Label(contacts_page, foreground="#b00020", justify="left", wraplength=600,
                   text="The Digital Contact Refresh is unavailable in this build: " + str(e)
                        + "\n\nThe other tabs are unaffected.").pack(padx=16, pady=16)
+    nb.hide(contacts_page)
 
     # The Write Codeplug tab, opened from a codeplug's write dialog on cps.aes.app.
     # HIDDEN until a codeplug link actually arrives: there is nothing to do in it
@@ -833,6 +839,10 @@ def main(url: str | None = None):
             if codeplug is not None:
                 codeplug.handle_launch_url(u)
             return
+        # Same add()-then-select as the codeplug branch, and likewise done even
+        # when the tab failed to build: this is the fallback for an unrecognised
+        # link, and the page it lands on is the one carrying the explanation.
+        nb.add(contacts_page)
         nb.select(contacts_page)
         if contacts is not None:
             contacts.handle_launch_url(u)
