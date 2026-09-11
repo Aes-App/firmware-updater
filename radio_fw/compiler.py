@@ -5,9 +5,8 @@ runs the vendored precompilers (radio_fw/vendor/fwupd_*), so the desktop tab
 validates a package at least as hard as the web CPS does before a byte reaches
 the radio.
 
-  FORK NOTICE — fwupd_sct.py is NO LONGER identical to its upstream copy at
-  channelBuddy/python/rdt_builder/fwupd_sct.py. This copy carries three fixes
-  derived from the decompiled vendor tool that upstream does not yet have: the
+  FORK NOTICE — fwupd_sct.py is NO LONGER identical to the server-side copy it
+  was taken from. This copy carries three fixes that copy does not yet have: the
   erase-region byte is computed as (InitFlashTypeEnum << 1) | 1 over the vendor
   ladder rather than looked up in a 7-entry capture table (so this copy accepts
   two segment starts upstream refuses), the trailing 0x00 is a pad-to-even

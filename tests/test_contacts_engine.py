@@ -30,12 +30,18 @@ class PcModeDevice:
     checksum with silence (as a real radio does) and flags it."""
 
     def __init__(self, ident=IDENT_878, program_reply=b"QX\x06", drop_ack_at=(), stray_before=(),
-                 silent_from=None):
+                 silent_from=None, slow_ack_at=()):
         self.ident = ident
         self.program_reply = program_reply
         self.drop_ack_at = set(drop_ack_at)      # block indexes whose FIRST ack is withheld
         self.stray_before = set(stray_before)    # block indexes answered with a junk byte then ACK
         self.silent_from = silent_from           # block index from which the radio never answers
+        # Block indexes the radio is merely SLOW on: no ACK in time, then BOTH
+        # copies answered once the resend arrives. A radio that was deaf answers
+        # once; one that was busy answers twice, and the second ACK is the one
+        # that quietly re-aligns the whole stream if nobody takes it out.
+        self.slow_ack_at = set(slow_ack_at)
+        self._late_acks = 0
         self.buf = bytearray()
         self.blocks = []            # (addr, data) in the order received (incl. resends)
         self.transcript = []        # "PROGRAM" / "ID" / "W" / "END"
@@ -87,8 +93,15 @@ class PcModeDevice:
                 if idx in self.drop_ack_at and idx not in self._withheld:
                     self._withheld.add(idx)
                     continue               # silent once → the host must resend
+                if idx in self.slow_ack_at and idx not in self._withheld:
+                    self._withheld.add(idx)
+                    self._late_acks += 1
+                    continue               # busy: this copy IS taken, answered late
                 if idx in self.stray_before:
                     ser.feed(b"\x00")
+                if self._late_acks:
+                    self._late_acks -= 1
+                    ser.feed(b"\x06")     # the overdue ACK for the previous copy
                 ser.feed(b"\x06")
                 continue
             # a partial "PROGRAM"/"END" still arriving
@@ -170,7 +183,7 @@ def test_write_streams_every_block_in_order_then_commits(fake_port):
 
 
 def test_missing_ack_is_answered_by_resending_the_same_frame(fake_port, monkeypatch):
-    monkeypatch.setattr(engine, "ACK_TIMEOUT_MS", 60)
+    monkeypatch.setattr(engine, "ACK_TIMEOUT_MS", (60, 60, 60))
     dev = PcModeDevice(drop_ack_at={1}, stray_before={2})
     fake_port(dev)
     plan = _plan((0x07000000, 4))
@@ -232,14 +245,18 @@ def test_abort_mid_write_stops_and_still_ends_the_session(fake_port, monkeypatch
 
 
 def test_radio_that_stops_answering_fails_after_retries_and_ends(fake_port, monkeypatch):
-    monkeypatch.setattr(engine, "ACK_TIMEOUT_MS", 40)
+    monkeypatch.setattr(engine, "ACK_TIMEOUT_MS", (40, 40, 40))
     dev = PcModeDevice(silent_from=2)
     fake_port(dev)
     lines, log = _logs()
-    with pytest.raises(engine.ContactWriteError, match="after 5 attempts"):
+    # Against the CONSTANT, not a number copied out of it: the attempt count is a
+    # tuning decision (it went 5 -> 3 when the per-attempt wait grew to cover a
+    # flash erase), and a test that hardcodes it fails for the wrong reason.
+    with pytest.raises(engine.ContactWriteError,
+                       match="after %d attempts" % engine.WRITE_ATTEMPTS):
         engine.write_contacts("COMX", _plan((0x07000000, 4)), on_log=log, on_progress=lambda *a: None)
-    # block 2 was sent five times, then the session was ended
-    assert [a for a, _ in dev.blocks].count(0x07000020) == 5
+    # block 2 was sent once per attempt, then the session was ended
+    assert [a for a, _ in dev.blocks].count(0x07000020) == engine.WRITE_ATTEMPTS
     assert dev.transcript[-1] == "END"
 
 
@@ -249,3 +266,59 @@ def test_empty_plan_is_refused_without_touching_the_port(fake_port):
     with pytest.raises(engine.ContactWriteError, match="empty"):
         engine.write_contacts("COMX", [], on_log=lambda *a: None, on_progress=lambda *a: None)
     assert fake.opens == []
+
+
+def test_a_resent_frame_does_not_leave_the_ack_stream_one_behind(fake_port, monkeypatch):
+    """A radio that was BUSY, not deaf, acknowledges both copies of a resend.
+
+    Take only the first and the spare ACK answers the next frame, and the one
+    after that, for the rest of the write. The damage is not the shifted count:
+    it is that a frame which genuinely goes unanswered is then covered by a stale
+    ACK, so the write reports a success it did not earn. That is what this test
+    is shaped to catch -- block 4 is never answered, and the write MUST fail.
+
+    Seen for real on an AT-D878UVII over Web Serial: 8 resends in 536,916 frames.
+    """
+    monkeypatch.setattr(engine, "ACK_TIMEOUT_MS", (60, 60, 60))
+    dev = PcModeDevice(slow_ack_at={1}, silent_from=5)
+    fake_port(dev)
+    lines, log = _logs()
+    with pytest.raises(engine.ContactWriteError, match="stopped answering"):
+        engine.write_contacts("COMX", _plan((0x07000000, 6)), on_log=log,
+                              on_progress=lambda *a: None)
+    assert any("duplicate ACK" in m for _, m in lines), "the spare ACK was left in the stream"
+    assert dev.transcript[-1] == "END", "the session is closed even when the write fails"
+
+
+def test_the_first_retry_comes_quickly_and_the_last_one_waits(fake_port, monkeypatch):
+    """A lost frame and a busy radio look identical for the first second.
+
+    They want opposite treatment, so the wait GROWS with each attempt: a frame
+    that is never coming back costs 1.5 s rather than 15, and a radio that is
+    genuinely busy still gets the long wait before anyone gives up on it. A flat
+    15 s cost a real 878 write 67 seconds for six frames that were never
+    answered.
+    """
+    assert engine.ACK_TIMEOUT_MS == tuple(sorted(engine.ACK_TIMEOUT_MS)), "waits must grow"
+    assert engine.ACK_TIMEOUT_MS[0] > 1420, "the first wait still clears the longest measured busy pause"
+    assert engine.WRITE_ATTEMPTS == len(engine.ACK_TIMEOUT_MS)
+
+    # And the loop really uses attempt N's timeout, not attempt 1's every time.
+    waits = []
+    real = engine.SerialLink.read_exactly
+
+    def spy(self, n, timeout_ms):
+        waits.append(timeout_ms)
+        return real(self, n, timeout_ms)
+
+    monkeypatch.setattr(engine.SerialLink, "read_exactly", spy)
+    monkeypatch.setattr(engine, "ACK_TIMEOUT_MS", (30, 60, 90))
+    dev = PcModeDevice(silent_from=0)
+    fake_port(dev)
+    lines, log = _logs()
+    with pytest.raises(engine.ContactWriteError):
+        engine.write_contacts("COMX", _plan((0x07000000, 1)), on_log=log,
+                              on_progress=lambda *a: None)
+    # The three ACK waits for the one block, in order, each capped by its attempt.
+    acks = [w for w in waits if w <= 90]
+    assert max(acks) <= 90 and any(w > 60 for w in acks), acks

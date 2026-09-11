@@ -64,7 +64,8 @@ def parse_launch_url(url: str) -> LaunchRequest:
     q = parse_qs(u.query, keep_blank_values=False)
     token = (q.get("token") or [""])[0].strip()
     if not token or not re.fullmatch(r"[A-Za-z0-9_\-]{16,512}", token):
-        raise LaunchError("the link carries no usable token — open the Tools page again and click the button")
+        raise LaunchError("the link carries no usable token — open My Contact Lists on cps.aes.app "
+                          "again and click the button")
     server = (q.get("server") or [None])[0]
     if server is not None:
         server = server.strip().rstrip("/") or None

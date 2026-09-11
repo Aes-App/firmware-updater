@@ -5,13 +5,14 @@ __pycache__/
 
 # Virtualenvs
 .venv/
-.venv-win/
+.venv-win*/
+.python-*/
 venv/
 
 # PyInstaller / build output
 build/
 dist/
-dist-win-*/
+build-win-*/
 *.spec.bak
 bt_ota/assets/AesApp.iconset/
 
@@ -30,3 +31,9 @@ _win_*
 # Notarization / signing scratch
 *.zip
 !/**/vendor/**/*.zip
+
+# Working notes, not shipped code. The repo is mirrored publicly, so anything
+# here stays local: reverse-engineering write-ups, vendor-tool analysis and
+# agent instructions are not what the mirror is for.
+docs/
+CLAUDE.md

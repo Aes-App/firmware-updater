@@ -49,11 +49,14 @@ class SessionError(ContactsError):
 
 
 _FRIENDLY = {
-    "invalid_token": "This link is not valid. Open the Tools page on cps.aes.app and click the button again.",
-    "token_expired": "This link has expired. Open the Tools page on cps.aes.app and click the button again.",
-    "token_superseded": "A newer link replaced this one. Use the most recent link from the Tools page.",
-    "plan_required": "Your account's WebCPS plan does not include the contact refresher. "
-                     "Upgrade on aes.app, then open the Tools page again.",
+    "invalid_token": "This link is not valid. Open cps.aes.app/tools/contact-lists and click "
+                     "\u201cOpen in AesApp Radio Updater\u201d again.",
+    "token_expired": "This link has expired. Open cps.aes.app/tools/contact-lists and click "
+                     "\u201cOpen in AesApp Radio Updater\u201d again.",
+    "token_superseded": "A newer link replaced this one. Use the most recent link from "
+                        "My Contact Lists on cps.aes.app.",
+    "plan_required": "Your account's WebCPS plan does not include this. Upgrade on aes.app, then "
+                     "open My Contact Lists again.",
 }
 
 
@@ -211,7 +214,8 @@ def claim_session(base_url: str, token: str, timeout: float = 15.0,
         raise _auth_failure(status, body)
     d = _json(body, "session reply")
     if not d.get("ok"):
-        raise ContactsError("The server did not open a session for this link. Try the Tools page again.")
+        raise ContactsError("The server did not open a session for this link. Try My Contact Lists "
+                            "on cps.aes.app again.")
     return d
 
 
@@ -310,10 +314,26 @@ def label_bundles(bundles: list[dict]) -> list[tuple[str, dict]]:
     return out
 
 
-def estimate_seconds(blocks: int) -> float:
-    """~0.5 ms per 16-byte frame (measured against the factory CPS) plus a
-    little headroom for the USB stack."""
-    return blocks * 0.00055
+#: Seconds per 16-byte frame, by contact format.
+#:
+#: The 890 figure is MEASURED on hardware over this app's own wire path
+#: (2026-09-10): 41,052 DMR contacts and 14,102 NXDN contacts written to an
+#: AT-D890UV in one session, 429,036 frames in 123.2 s with no retries, which is
+#: 3,481 frames a second or 55.7 kB/s. The old single figure of 0.55 ms a frame
+#: was taken from the factory CPS running in a VM and is about twice too slow.
+#:
+#: The 878 family has NOT been measured over this path -- writing to one of the
+#: radios on the bench would have replaced its contact database, which was not
+#: what the test was for -- so it keeps the conservative old figure. Over Web
+#: Serial the browser writer measures those radios at 1,625-2,060 frames a
+#: second, slower than the 890 on the same cable, so erring long is right.
+_SECONDS_PER_FRAME = {"anytone_890": 0.000300, "anytone_890_nx": 0.000300}
+_SECONDS_PER_FRAME_DEFAULT = 0.00055
+
+
+def estimate_seconds(blocks: int, fmt: Optional[str] = None) -> float:
+    """How long `blocks` frames take, for the format if we know it."""
+    return blocks * _SECONDS_PER_FRAME.get(fmt or "", _SECONDS_PER_FRAME_DEFAULT)
 
 
 # ── sha-addressed cache ──────────────────────────────────────────────────────

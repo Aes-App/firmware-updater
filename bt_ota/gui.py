@@ -19,12 +19,13 @@ import tkinter as tk
 import webbrowser
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
+from . import update_check
 from .client import MODELS, firmware_kind, make_client, scan_devices
 
 APP_TITLE = "AesApp Radio Updater"
 VENDOR = "AesApp Inc."
 WEBSITE = "https://aes.app/"
-VERSION = "0.8.1"
+VERSION = "0.9.0"
 LOG_PREFIX = "[aesapp]"
 
 # Report this version to the firmware server on its API queries (User-Agent + a
@@ -143,6 +144,71 @@ def _link_label(parent, text=WEBSITE, url=WEBSITE):
     return lbl
 
 
+# ---- version check ----------------------------------------------------------
+def _check_for_updates(root, on_done):
+    """Run update_check.check() off the Tk thread and hand the Result back ON it.
+
+    Tk is not thread-safe: a worker that calls a widget method directly is how
+    you get a crash that only ever happens on someone else's machine, so the
+    result comes back through a Queue the Tk thread polls -- the same shape every
+    other worker in this app uses. Both the poll and the callback tolerate a
+    window that has been closed in the meantime, which is the normal case for
+    someone who opens About and shuts it again.
+    """
+    q: queue.Queue = queue.Queue()
+
+    def worker():
+        try:
+            q.put(update_check.check(VERSION))
+        except Exception as e:  # noqa: BLE001 - check() promises not to raise; this is the belt
+            q.put(update_check.Result(False, False, VERSION, "", update_check.RELEASES_URL,
+                                      "Update check failed: %s" % e))
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def poll():
+        try:
+            res = q.get_nowait()
+        except queue.Empty:
+            try:
+                root.after(250, poll)
+            except tk.TclError:
+                pass
+            return
+        try:
+            on_done(res)
+        except tk.TclError:
+            pass
+
+    try:
+        root.after(250, poll)
+    except tk.TclError:
+        pass
+
+
+def _install_update_banner(root, header):
+    """Put a quiet "Update available" link in the window header, if there is one.
+
+    Nothing appears while the check runs, and nothing appears if it fails: an
+    operator who cannot reach GitHub does not need a red line about it on every
+    launch. About has a button that says what went wrong, for anyone who asks.
+    The check is one unauthenticated GET to api.github.com about a public
+    repository, and AESAPP_NO_UPDATE_CHECK=1 in the environment turns it off
+    (update_check.OPT_OUT_ENV).
+    """
+    if update_check.opted_out():
+        return
+    holder = ttk.Frame(header)
+    holder.pack(side="right", padx=(0, 10))
+
+    def done(res):
+        if not res.newer:
+            return
+        _link_label(holder, text="Update available: %s \u2197" % res.latest, url=res.url).pack()
+
+    _check_for_updates(root, done)
+
+
 # ---- disclaimer gate + about ------------------------------------------------
 def _brand_header(parent, small=False):
     row = ttk.Frame(parent)
@@ -222,8 +288,38 @@ def show_about(root):
     _brand_header(dlg).pack(fill="x", padx=16, pady=16)
     info = ttk.Frame(dlg)
     info.pack(fill="x", padx=16)
-    ttk.Label(info, text=f"Version {VERSION}").pack(anchor="w")
-    ttk.Label(info, text=f"© {VENDOR}. All rights reserved.").pack(anchor="w", pady=(2, 0))
+    vrow = ttk.Frame(info)
+    vrow.pack(anchor="w", fill="x")
+    ttk.Label(vrow, text=f"Version {VERSION}").pack(side="left")
+    check_btn = ttk.Button(vrow, text="Check for updates")
+    check_btn.pack(side="left", padx=(10, 0))
+    # One label for the answer and one holder for the link, both empty to start:
+    # the dialog must not grow a line of text before anyone has asked anything.
+    check_lbl = ttk.Label(info, text="", wraplength=380, justify="left", foreground="#666")
+    check_lbl.pack(anchor="w", pady=(4, 0))
+    link_holder = ttk.Frame(info)
+    link_holder.pack(anchor="w")
+
+    def _checked(res):
+        check_btn.state(["!disabled"])
+        # Three states, three colours, and "could not find out" is NOT green: the
+        # one thing this must never do is look like "you are up to date" when it
+        # never reached GitHub.
+        check_lbl.configure(text=res.message,
+                            foreground="#b8860b" if res.newer else ("#127a2e" if res.ok else "#b00020"))
+        for w in link_holder.winfo_children():
+            w.destroy()
+        if res.newer or not res.ok:
+            _link_label(link_holder, text="Open the releases page on GitHub",
+                        url=res.url).pack(anchor="w", pady=(2, 0))
+
+    def _do_check():
+        check_btn.state(["disabled"])
+        check_lbl.configure(text="Checking GitHub…", foreground="#444")
+        _check_for_updates(root, _checked)
+
+    check_btn.configure(command=_do_check)
+    ttk.Label(info, text=f"© {VENDOR}. All rights reserved.").pack(anchor="w", pady=(6, 0))
     foot = ttk.Frame(dlg)
     foot.pack(fill="x", padx=16, pady=14)
     ttk.Button(foot, text="Disclaimer",
@@ -317,6 +413,7 @@ class App:
             header.pack(fill="x", **pad)
             _brand_header(header, small=True).pack(side="left")
             ttk.Button(header, text="About", command=lambda: show_about(self.root)).pack(side="right")
+            _install_update_banner(self.root, header)
             ttk.Separator(self.ui).pack(fill="x", padx=8)
 
         # Step 1: model
@@ -636,10 +733,20 @@ def _diag() -> int:
     assert _cs.block_count(_cs.decode_container(_cs.encode_container(
         [_cs.Segment(0x10, bytes(32))]))) == 2
     assert _cl.parse_launch_url("aesapp://contacts?token=abcdefghijklmnop").token == "abcdefghijklmnop"
+    # The local list builder and its generated country tables. Both are imported
+    # lazily by the tab, so a frozen build that dropped them would only find out
+    # when an operator picked a user.csv. The index key is the cheapest invariant
+    # that proves the builder is the real one: it is the radio's own id -> lookup
+    # key map, pinned on hardware captures in tests/test_contacts_local_build.py.
+    from radio_contacts import contact_build as _cb, contact_tables as _ct
+    assert _cb.contact_index_key(3101234) == 102769768
+    assert _cb.radio_for_ident("878UV2").capacity == 500000
+    assert _ct.continent_of("DEU") == "EU" and len(_ct.COUNTRY_CODES) > 100
     print(f"DIAG OK: BT tab (bleak+so, auth sample={out.hex()}); "
           f"Radio tab (pyserial {serial.VERSION}, precompilers, {len(images)} step photos, "
           f"models {'/'.join(spec.model_label(m) for m in spec.MODEL_ORDER)}); "
-          f"Contacts tab (segments/catalog/engine/launch)")
+          f"Contacts tab (segments/catalog/engine/launch + local builder, "
+          f"{len(_ct.COUNTRY_CODES)} countries, {len(_cb.RADIOS)} buildable models)")
     return 0
 
 
@@ -681,8 +788,8 @@ def main(url: str | None = None):
         raise SystemExit(_diag())
     _install_diagnostics()
 
-    # aesapp:// links (the Digital Contact Refresh tab is opened from the Tools page
-    # on cps.aes.app). Three delivery paths, one handler:
+    # aesapp:// links (the Digital Contact Refresh tab is opened from My Contact
+    # Lists on cps.aes.app). Three delivery paths, one handler:
     #   - macOS: LaunchServices sends a GURL Apple Event, which Tk hands to the
     #     ::tk::mac::LaunchURL command — the same event whether the app was just
     #     launched for the link or was already running. Registered BEFORE the
@@ -757,6 +864,7 @@ def main(url: str | None = None):
     header.pack(fill="x", padx=8, pady=6)
     _brand_header(header, small=True).pack(side="left")
     ttk.Button(header, text="About", command=lambda: show_about(root)).pack(side="right")
+    _install_update_banner(root, header)
     ttk.Separator(root).pack(fill="x", padx=8)
 
     # Two tabs: the original Bluetooth-module updater, and the radio/boards
@@ -781,12 +889,13 @@ def main(url: str | None = None):
                   text="Radio and Boards updates are unavailable in this build: " + str(e)
                        + "\n\nThe Bluetooth Module Update tab is unaffected.").pack(padx=16, pady=16)
 
-    # The Digital Contact Refresh tab, opened from the Tools page on cps.aes.app.
-    # HIDDEN until a contacts link arrives, for the same reason the Write Codeplug
-    # tab is: the list to write comes from the server with the link, so there is
-    # nothing to start here without one, and an always-visible tab reads as a
-    # feature you can begin from the app. Built at startup and hide()den, so it is
-    # ready the instant a link lands.
+    # The Digital Contact Refresh tab. VISIBLE from startup, unlike the codeplug
+    # tab below: it hid until a contacts link arrived because the list to write
+    # came from the server with the link, so there was nothing to start here
+    # without one. There is now — the tab can build a contact list on this machine
+    # from a register download the operator already has (the builder is
+    # radio_contacts.contact_build), which needs no link, no token and no server.
+    # A link still selects this tab; it is no longer what reveals it.
     contacts_page = ttk.Frame(nb)
     nb.add(contacts_page, text="Digital Contact Refresh")
     contacts = None
@@ -797,7 +906,6 @@ def main(url: str | None = None):
         ttk.Label(contacts_page, foreground="#b00020", justify="left", wraplength=600,
                   text="The Digital Contact Refresh is unavailable in this build: " + str(e)
                        + "\n\nThe other tabs are unaffected.").pack(padx=16, pady=16)
-    nb.hide(contacts_page)
 
     # The Write Codeplug tab, opened from a codeplug's write dialog on cps.aes.app.
     # HIDDEN until a codeplug link actually arrives: there is nothing to do in it
@@ -842,6 +950,8 @@ def main(url: str | None = None):
         # Same add()-then-select as the codeplug branch, and likewise done even
         # when the tab failed to build: this is the fallback for an unrecognised
         # link, and the page it lands on is the one carrying the explanation.
+        # add() on a tab that is already in the strip is a no-op, and it keeps the
+        # two branches symmetrical if this one is ever hidden again.
         nb.add(contacts_page)
         nb.select(contacts_page)
         if contacts is not None:

@@ -36,9 +36,30 @@ END = b"END"
 WRITE_LL = 16
 HANDSHAKE_TIMEOUT_MS = 2500
 IDENT_TIMEOUT_MS = 2500
-ACK_TIMEOUT_MS = 600
+#: How long a frame may go unacknowledged before it is re-sent, PER ATTEMPT --
+#: the two things that cause a missing ACK want opposite treatment.
+#:
+#: A BUSY radio answers late. In a capture of the factory CPS writing a D890UV
+#: in full (996,159 frames) it waited over 300 ms for 21 frames and over a
+#: SECOND for seven,
+#: worst 1.42 s, plus 10.3 s before the very first contact frame. Re-sending
+#: into that gets both copies acknowledged -- see _swallow_duplicate_ack.
+#:
+#: A LOST frame is never answered at all, and waiting on it is dead time. On an
+#: AT-D878UVII over Web Serial about one frame in 70,000 goes missing (8 in one
+#: 536,916-frame write, 6 in the next). A flat 15 s turned those six into 67
+#: seconds of nothing: the same write took 343 s at 600 ms and 410 s at 15 s.
+#:
+#: So: try briefly, then patiently. This app's own D890UV write over native
+#: serial never came close to the first step -- 28.6 ms was the worst wait in
+#: 429,036 frames.
+ACK_TIMEOUT_MS = (1500, 5000, 15000)
 END_TIMEOUT_MS = 4000
-WRITE_ATTEMPTS = 5
+#: One attempt per timeout above.
+WRITE_ATTEMPTS = len(ACK_TIMEOUT_MS)
+#: How long to wait for the SECOND ACK after a frame was re-sent. See
+#: _swallow_duplicate_ack.
+DUPLICATE_ACK_MS = 150
 STRAY_BYTES_PER_ATTEMPT = 8
 PROGRESS_EVERY_BLOCKS = 256
 
@@ -164,6 +185,26 @@ def _exit_program(link: SerialLink, on_log, timeout_ms: int = END_TIMEOUT_MS,
            "ok")
 
 
+def _swallow_duplicate_ack(link: SerialLink, on_log) -> None:
+    """Take the second acknowledgement of a re-sent frame out of the stream.
+
+    A radio that was merely slow, not deaf, answers BOTH copies. Treat the first
+    ACK as this frame's and the second is still queued -- and it then answers the
+    NEXT frame, and the one after that, for the rest of the write: the stream
+    runs one behind, and a frame that genuinely fails is covered by a stale ACK
+    with nothing to show for it. Measured on an AT-D878UVII: 8 re-sends in
+    536,916 frames, so this is rare, and rare + silent + wrong is worth 150 ms.
+    """
+    try:
+        b = link.read_exactly(1, DUPLICATE_ACK_MS)
+    except AbortedError:
+        raise
+    except FirmwareUpdateError:
+        return                              # nothing came: the first copy was really lost
+    if b[0] == ACK:
+        on_log("  swallowed the duplicate ACK from a re-sent frame", "info")
+
+
 def _write_block(link: SerialLink, addr: int, data: bytes, on_log) -> int:
     """Send one W-frame and wait for its ACK; resend on silence (idempotent).
     Returns the number of attempts it took."""
@@ -175,7 +216,7 @@ def _write_block(link: SerialLink, addr: int, data: bytes, on_log) -> int:
             on_log(f"  write retry {attempt}/{WRITE_ATTEMPTS} @0x{addr:08x}", "info")
         link.send(f)
         strays = 0
-        deadline = time.monotonic() + ACK_TIMEOUT_MS / 1000.0
+        deadline = time.monotonic() + ACK_TIMEOUT_MS[attempt - 1] / 1000.0
         while True:
             remaining_ms = int((deadline - time.monotonic()) * 1000)
             if remaining_ms <= 0:
@@ -189,6 +230,8 @@ def _write_block(link: SerialLink, addr: int, data: bytes, on_log) -> int:
                     raise
                 break                       # timeout → resend
             if b[0] == ACK:
+                if attempt > 1:
+                    _swallow_duplicate_ack(link, on_log)
                 return attempt
             strays += 1                     # drop a stray non-ACK byte, keep looking
             if strays > STRAY_BYTES_PER_ATTEMPT:

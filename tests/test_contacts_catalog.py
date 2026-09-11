@@ -261,3 +261,21 @@ def test_offline_is_a_clear_error():
 
 def test_estimate_scales_with_blocks():
     assert 700 < catalog.estimate_seconds(1_500_000) < 900
+
+
+def test_the_890_estimate_matches_what_the_radio_actually_did():
+    """Pinned to a measurement, not to a feeling.
+
+    2026-09-10, an AT-D890UV on the bench: 41,052 DMR contacts plus 14,102 NXDN
+    contacts, written in ONE session by this app's own engine, 429,036 frames in
+    123.2 s with no retries. The estimate must land near that and, where it is
+    wrong, be wrong on the long side -- an operator who is told six minutes and
+    waits eight forgives it; the reverse is what makes someone unplug a cable
+    mid-write.
+    """
+    measured = 123.2
+    predicted = catalog.estimate_seconds(429_036, "anytone_890")
+    assert measured <= predicted <= measured * 1.25, predicted
+    # An unknown format keeps the old, slower figure rather than assuming 890 speed.
+    assert catalog.estimate_seconds(429_036, "anytone_878") > predicted
+    assert catalog.estimate_seconds(429_036, None) > predicted

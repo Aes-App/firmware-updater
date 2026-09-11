@@ -1,15 +1,20 @@
-"""Both link-driven tabs stay out of the tab strip until their link arrives.
+"""The Write Codeplug tab stays out of the tab strip until its link arrives.
 
-The Digital Contact Refresh and Write Codeplug tabs are useless without a link
-from cps.aes.app -- the list to write, or the codeplug, comes WITH the link. An
+It is useless without one: the codeplug to write comes WITH the link, and an
 always-visible tab reads as a feature you can start from the app, which you
-cannot. So both are built at startup and then hidden, and the link that gives
-them something to do is what puts them back.
+cannot. So it is built at startup and then hidden, and the link that gives it
+something to do is what puts it back.
+
+The Digital Contact Refresh tab used to be hidden for the same reason and is NOT
+any more: it can build a contact list on this machine from a register download
+the operator already has, which starts in the app and needs no link at all. A
+contacts link still selects that tab; it is no longer what reveals it.
 
 This pins the Tk mechanics the routing depends on: hide() takes a tab out of the
 strip while leaving its page built, and add() puts it back with the label and
 position hide() left behind. It also pins the routing itself -- a contacts link
-must not reveal the codeplug tab, and vice versa.
+must not reveal the codeplug tab, and a codeplug link must land on the codeplug
+tab rather than on the contact refresher.
 
 Needs a Tk display; skips where there is none.
 
@@ -29,12 +34,15 @@ from tkinter import ttk                                              # noqa: E40
 
 from radio_contacts import launch as _lu                             # noqa: E402
 
-VISIBLE_AT_STARTUP = ["Bluetooth Module Update", "Radio and Boards Updates"]
+# In main()'s order. The contact refresher is in this list because a local build
+# starts in the app: there is something to do in it before any link arrives.
+VISIBLE_AT_STARTUP = ["Bluetooth Module Update", "Radio and Boards Updates",
+                      "Digital Contact Refresh"]
 # A real launch token: 32 random bytes base64url, 43 chars. parse_launch_url
 # refuses anything shorter, so a placeholder here would make every link look
 # unparseable and every test pass for the wrong reason.
 TOKEN = "A" * 43
-LINK_DRIVEN = ["Digital Contact Refresh", "Write Codeplug"]
+LINK_DRIVEN = ["Write Codeplug"]
 
 
 class Strip:
@@ -83,29 +91,34 @@ def strip():
         pass
 
 
-def test_neither_link_driven_tab_is_in_the_strip_at_startup(strip):
+def test_only_the_codeplug_tab_is_out_of_the_strip_at_startup(strip):
+    """The contact refresher is in the strip from the start (a local build begins
+    in the app); the codeplug tab is not, because nothing begins in it."""
     assert strip.visible() == VISIBLE_AT_STARTUP
+    assert "Write Codeplug" not in strip.visible()
     assert strip.selected() == VISIBLE_AT_STARTUP[0], \
-        "hiding the later tabs must not leave the notebook on a hidden one"
+        "hiding the later tab must not leave the notebook on a hidden one"
 
 
-def test_a_contacts_link_reveals_only_the_contacts_tab(strip):
+def test_a_contacts_link_selects_the_contacts_tab_and_reveals_nothing_else(strip):
     strip.deliver(f"aesapp://contacts?token={TOKEN}&server=https://cps.aes.app")
     assert strip.selected() == "Digital Contact Refresh"
     assert "Digital Contact Refresh" in strip.visible()
     assert "Write Codeplug" not in strip.visible(), "a contacts link is not a codeplug link"
 
 
-def test_a_codeplug_link_reveals_only_the_codeplug_tab(strip):
+def test_a_codeplug_link_reveals_the_codeplug_tab_and_goes_to_it(strip):
+    """The narrow claim now: the link must land on the codeplug tab, not on the
+    contact refresher, which would answer it with a contacts error. The refresher
+    being in the strip is no longer evidence of anything."""
     strip.deliver(f"aesapp://codeplug?token={TOKEN}&server=https://cps.aes.app")
     assert strip.selected() == "Write Codeplug"
     assert "Write Codeplug" in strip.visible()
-    assert "Digital Contact Refresh" not in strip.visible()
 
 
-def test_an_unrecognised_link_falls_back_to_contacts_and_reveals_it(strip):
+def test_an_unrecognised_link_falls_back_to_contacts_and_selects_it(strip):
     """The contacts tab is where an unparseable link gets its error message, so
-    it has to be visible to show it."""
+    the routing has to bring the operator to it."""
     strip.deliver("aesapp://nonsense")
     assert strip.selected() == "Digital Contact Refresh"
     assert "Digital Contact Refresh" in strip.visible()

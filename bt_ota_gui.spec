@@ -67,7 +67,11 @@ hiddenimports += ["radio_fw", "radio_fw.gui_tab", "radio_fw.engines", "radio_fw.
 # aesapp:// link plumbing, and the stdlib pieces they lean on.
 hiddenimports += ["radio_contacts", "radio_contacts.segments", "radio_contacts.catalog",
                   "radio_contacts.engine", "radio_contacts.gui_tab", "radio_contacts.launch",
-                  "gzip", "socket", "secrets", "struct"]
+                  # the local list builder + its generated country tables, named for
+                  # the same reason as the rest of the package: bt_ota.gui.main imports
+                  # radio_contacts lazily, so no static import reaches any of it.
+                  "radio_contacts.contact_build", "radio_contacts.contact_tables",
+                  "csv", "gzip", "socket", "secrets", "struct"]
 # Writing a codeplug prepared on the web app: the job client, the write/verify
 # engine and its tab. It reuses radio_contacts' transport and wire primitives.
 hiddenimports += ["radio_codeplug", "radio_codeplug.client", "radio_codeplug.engine",

@@ -963,9 +963,8 @@ def _run_sct(port_name: str, artifact: bytes, manifest: dict, on_log, on_progres
     link = SerialLink(port_name, on_log=on_log, abort=abort)
     committed = False        # has an erase been issued? (nothing is recoverable after)
     try:
-        # DTR/RTS: carried over from the browser flasher this engine ports
-        # (channelBuddy assets/js/firmware-update-serial.js), which could not
-        # deassert DTR even in principle. The vendor tool sets neither — it
+        # DTR/RTS: carried over from the browser flasher this engine ports,
+        # which could not deassert DTR even in principle. The vendor tool sets neither — it
         # assigns only PortName, BaudRate, StopBits and ReadBufferSize before
         # Open (HPISerialPort.cs:88-95), leaving both lines LOW — and it opens
         # 8N2, where we open 8N1 (SerialLink.open). Both differences are
