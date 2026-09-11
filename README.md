@@ -12,8 +12,8 @@ it through an `aesapp://` link.
 
 | Tab | What it writes | Radios | Files it takes |
 |-----|----------------|--------|----------------|
-| **Bluetooth Module Update** | Bluetooth-module firmware, over Bluetooth | D890UV, D578, D878 | `.ufw` (D890UV), `.bin` (D578/D878) |
-| **Radio and Boards Updates** | main radio firmware, icons/fonts, NR board, SCT3288 DSP | D890UV | `.CDD` + `.CDI` (+ optional `.spi`), `.ufw`, `.hex` |
+| **Bluetooth Module Update** | Bluetooth-module firmware, over Bluetooth | D878UV, D878UVII, D578UV, D578UVII, D890UV | `.ufw` (D890UV), `.bin` (D578 and D878 families) |
+| **Radio and Boards Updates** | radio firmware, icons and fonts, and the boards each radio has | D878UV, D878UVII, D890UV | `.CDD` + `.CDI` (+ optional `.spi`), `.ufw`, `.hex` |
 | **Digital Contact Refresh** | the digital-contact database (the caller-ID names shown for DMR IDs) | D168UV, D578UV, D578UVII, D878UV, D878UVII, D890UV | a list from your cps.aes.app account, or your own `user.csv` and `nxdn.csv` |
 | **Write Codeplug** | a codeplug prepared on cps.aes.app | D168UV, D578UVII, D878UVII, D890UV | none — it arrives with the link |
 
@@ -23,6 +23,11 @@ Notes worth knowing before you use it:
   a register download of your own, which it turns into the radio's contact
   database on your machine — pick the countries you want, connect, write.
   Nothing is uploaded on that path.
+- **Radio and Boards Updates** offers what each radio actually has: a D890UV
+  takes firmware, icons and fonts, the SCT3288 baseband and the NR board; a
+  D878UV or D878UVII takes firmware, icons and fonts, and the APRS/Bluetooth
+  board. Targets are written with the main firmware last, so a failure part-way
+  through leaves the radio still bootable.
 - **Write Codeplug** is hidden until a link opens it: there is nothing to do in
   it without one.
 - Protocol notes for the Bluetooth side are in
