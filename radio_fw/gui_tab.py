@@ -30,6 +30,7 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 from serial.tools import list_ports
 
 from . import compiler, download, engines, spec
+from .layout import follow_width as _follow_width
 
 _LOG_TAGS = {"tx": "#0b5fff", "rx": "#7a3fb0", "ok": "#127a2e", "er": "#b00020", "error": "#b00020"}
 
@@ -73,6 +74,25 @@ def _scaled_photo(img: tk.PhotoImage, target_w: int) -> tk.PhotoImage:
     if s > 1:
         out = out.subsample(s, s)
     return out
+
+
+#: The smallest a step photo is allowed to get when the window is short. Below
+#: this the buttons on it stop being readable, and the text beside it is usually
+#: taller anyway, so shrinking further would not buy any room.
+_STEP_MIN_H = 120
+#: Room kept for the protocol log before the photo starts to give. The log is
+#: what shrinks first; this stops it vanishing entirely while a picture that
+#: could be smaller is still at full size.
+_LOG_RESERVE = 64
+
+
+def _load_step_source(name: str) -> tk.PhotoImage | None:
+    """The step photo at the asset's own resolution, for rescaling from. Scaling
+    a scaled copy compounds the loss, so every refit starts from this."""
+    try:
+        return tk.PhotoImage(file=_asset_path(name))
+    except Exception:
+        return None
 
 
 def _load_step_image(name: str) -> tk.PhotoImage | None:
@@ -157,6 +177,8 @@ class _Row:
         # carry no such label.
         self.version_lbl = ttk.Label(frame, text="", foreground="#0b5f99")
         self.version_lbl.grid(row=0, column=3, sticky="e", padx=(6, 0))
+        _follow_width(self.status, frame,
+                      reserve=lambda: self.cb.winfo_width() + self.version_lbl.winfo_width() + 18)
 
     def _pick(self):
         multi = spec.is_multi(self.kind)
@@ -691,6 +713,7 @@ class RadioBoardsTab:
         self.server_status = ttk.Label(self.server_row, text="", foreground="#666",
                                        wraplength=620, justify="left")
         self.server_status.grid(row=1, column=0, columnspan=5, sticky="w", pady=(2, 0))
+        _follow_width(self.server_status, self.server_row, reserve=8)
 
         banner = ttk.Label(
             outer, justify="left", foreground="#7a1020", wraplength=640,
@@ -700,28 +723,41 @@ class RadioBoardsTab:
                   "powered and the cable in for the whole update, and only load files built for your "
                   "exact model."))
         banner.pack(fill="x", pady=(0, 8))
+        _follow_width(banner, outer, reserve=8)
 
         # --- setup view ---
         self.setup = ttk.Frame(outer)
-        self.setup.pack(fill="both", expand=True)
+        # No expand: the view is as tall as its content, so the block pinned to
+        # its bottom sits right under the target rows on a tall window instead of
+        # floating to the window's edge. A short window still shrinks it.
+        self.setup.pack(fill="x")
+        # The agreement and Start are packed FIRST, against the bottom. The packer
+        # serves widgets in packing order, so these are guaranteed their room and
+        # a short window takes it from the target list instead -- which comes back
+        # as the window grows, where a Start button below the edge could not be
+        # clicked at all. Visually nothing moves.
+        start_box = ttk.Frame(self.setup)
+        start_box.pack(side="bottom", fill="x")
         ttk.Label(self.setup, text="Choose what to update", font=("", 12, "bold")).pack(anchor="w")
-        ttk.Label(self.setup, justify="left", foreground="#444", wraplength=640,
-                  text=("Pick the vendor files for each target you want to write. Each package is compiled "
-                        "and checked here before anything is sent. Targets are written in the order shown "
-                        "(radio firmware first) — you can skip any, but not reorder them.")
-                  ).pack(anchor="w", pady=(0, 6))
+        setup_desc = ttk.Label(
+            self.setup, justify="left", foreground="#444", wraplength=640,
+            text=("Pick the vendor files for each target you want to write. Each package is compiled "
+                  "and checked here before anything is sent. Targets are written in the order shown "
+                  "(radio firmware first) — you can skip any, but not reorder them."))
+        setup_desc.pack(anchor="w", pady=(0, 6))
+        _follow_width(setup_desc, self.setup, reserve=8)
 
         self.rows_box = ttk.Frame(self.setup)
         self.rows_box.pack(fill="x")
         self._build_rows()
 
-        ttk.Separator(self.setup).pack(fill="x", pady=8)
+        ttk.Separator(start_box).pack(fill="x", pady=8)
         self.confirm = tk.BooleanVar(value=False)
         ttk.Checkbutton(
-            self.setup, variable=self.confirm, command=self._refresh_start_state,
+            start_box, variable=self.confirm, command=self._refresh_start_state,
             text="I understand these writes are not verified and that an interrupted write can brick a radio."
         ).pack(anchor="w")
-        self.start_btn = ttk.Button(self.setup, text="Start Upgrades", command=self._start)
+        self.start_btn = ttk.Button(start_box, text="Start Upgrades", command=self._start)
         self.start_btn.pack(anchor="w", pady=(8, 0))
         self.start_btn.state(["disabled"])
 
@@ -734,11 +770,22 @@ class RadioBoardsTab:
 
         body = ttk.Frame(self.wizard)
         body.pack(fill="x", pady=6)
+        self._wbody = body
+        # The photo is the one large block on this screen that can give, so it
+        # follows the window: a laptop screen or a window dragged shorter scales
+        # it down rather than pushing the buttons below the edge.
+        self._step_natural = None
+        self._step_src = None
+        self._fit_pending = False
+        self.wizard.bind("<Configure>", lambda _e: self._schedule_fit())
         self.wimage = ttk.Label(body)
         self.wimage.pack(side="left", anchor="n", padx=(0, 12))
         self.winstr = ttk.Label(body, justify="left", wraplength=380,
                                 foreground="#7a1020", font=("", 11))
         self.winstr.pack(side="left", anchor="n", fill="x", expand=True)
+        # Beside the photo, so what it can have is the row minus the photo -- which
+        # itself changes size with the window.
+        _follow_width(self.winstr, body, reserve=lambda: self.wimage.winfo_width() + 20)
 
         # controls: [Ready] -> [port picker + Connect] -> [progress] -> [Next]
         self.wctl = ttk.Frame(self.wizard)
@@ -766,7 +813,15 @@ class RadioBoardsTab:
         self.abort_btn = ttk.Button(self.wizard, text="Stop", command=self._on_abort)
         self.next_btn = ttk.Button(self.wizard, text="Next", command=self._on_next)
 
-        ttk.Label(self.wizard, text="Protocol log").pack(anchor="w", pady=(8, 0))
+        # THE LOG IS PACKED LAST AND EVERYTHING ELSE GOES ABOVE IT. Tk's packer
+        # hands out space in packing order, so whatever is packed after the log
+        # is what a short window cuts off. The controls below are shown step by
+        # step, long after this runs, and a plain .pack() appends them AFTER the
+        # log: on a laptop screen Connect && Write, Stop and Next all vanished
+        # while the log kept its ten empty lines. Every one of them is packed
+        # before=self.log_lbl, so the log is the only thing that ever gives way.
+        self.log_lbl = ttk.Label(self.wizard, text="Protocol log")
+        self.log_lbl.pack(anchor="w", pady=(8, 0))
         self.log = scrolledtext.ScrolledText(self.wizard, height=10, wrap="word", state="disabled")
         self.log.pack(fill="both", expand=True)
         for tag, color in _LOG_TAGS.items():
@@ -774,21 +829,26 @@ class RadioBoardsTab:
 
         # --- done view ---
         self.done = ttk.Frame(outer)
+        # Buttons first, against the bottom, for the same reason as Start above.
+        again = self._again_frame = ttk.Frame(self.done)
+        again.pack(side="bottom", fill="x")
         ttk.Label(self.done, text="Radio finished", font=("", 13, "bold")).pack(anchor="w")
         self.done_summary = ttk.Frame(self.done)
         self.done_summary.pack(fill="x", pady=6)
         # Shown only when Radio Firmware was written this batch (see _finish_radio).
         self.mcu_box = ttk.LabelFrame(self.done, text="Reset the MCU now (Radio Firmware was written)")
-        _mcu_body = ttk.Frame(self.mcu_box)
+        _mcu_body = self._mcu_body = ttk.Frame(self.mcu_box)
         _mcu_body.pack(fill="x", padx=8, pady=6)
-        self._mcu_img = _load_step_image("Reset.png")   # keep a ref so Tk doesn't GC it
-        ttk.Label(_mcu_body, image=self._mcu_img if self._mcu_img else "").pack(
-            side="left", anchor="n", padx=(0, 12))
+        self._mcu_natural = _load_step_image("Reset.png")
+        self._mcu_src = _load_step_source("Reset.png")
+        self._mcu_img = self._mcu_natural               # keep a ref so Tk doesn't GC it
+        self._mcu_label = ttk.Label(_mcu_body, image=self._mcu_img if self._mcu_img else "")
+        self._mcu_label.pack(side="left", anchor="n", padx=(0, 12))
+        self.done.bind("<Configure>", lambda _e: self._schedule_fit())
         self.mcu_reset_lbl = ttk.Label(_mcu_body, justify="left", wraplength=420,
                                        foreground="#7a1020", font=("", 11))
         self.mcu_reset_lbl.pack(side="left", anchor="n", fill="x", expand=True)
-        again = self._again_frame = ttk.Frame(self.done)
-        again.pack(fill="x")
+        _follow_width(self.mcu_reset_lbl, _mcu_body, reserve=lambda: self._mcu_label.winfo_width() + 20)
         ttk.Button(again, text="Update another radio (same selection)", command=self._again).pack(side="left")
         ttk.Button(again, text="Back to setup", command=self._back_to_setup).pack(side="left", padx=8)
 
@@ -859,7 +919,9 @@ class RadioBoardsTab:
         if kind in spec.UNCONFIRMED:
             instr = "⚠ Entry combo not yet confirmed — verify before continuing.\n\n" + instr
         self.winstr.configure(text=instr)
-        self._step_img = _load_step_image(spec.image(kind))
+        self._step_natural = _load_step_image(spec.image(kind))
+        self._step_src = _load_step_source(spec.image(kind))
+        self._step_img = self._step_natural
         self.wimage.configure(image=self._step_img if self._step_img else "")
 
         # reset controls to the "instructions" state
@@ -876,6 +938,70 @@ class RadioBoardsTab:
         self.skip_btn.configure(text="Skip this target", state="normal")
         self.skip_btn.pack(in_=self.wctl, side="left", padx=8)
         self.connect_btn.configure(text="Connect && Write")
+        self._schedule_fit()
+
+    # ---- fitting the step photo to the window -------------------------------
+    def _schedule_fit(self):
+        """Refit once, when Tk is idle. A resize delivers a burst of <Configure>
+        events and each control that appears or disappears changes the room; one
+        pass after the burst is enough."""
+        if self._fit_pending:
+            return
+        self._fit_pending = True
+        try:
+            self.wizard.after_idle(self._fit_step_image)
+        except tk.TclError:
+            self._fit_pending = False
+
+    def _fit_step_image(self):
+        """Refit whichever photo is on screen: the step photo in the wizard, or
+        the MCU-reset photo on the finished view."""
+        self._fit_pending = False
+        try:
+            if self.wizard.winfo_ismapped():
+                self._step_img = self._fit_photo(
+                    self.wimage, self._step_img, self._step_natural, self._step_src,
+                    container=self.wizard, block=self._wbody,
+                    give=self.log.frame, reserve=_LOG_RESERVE)
+            elif self.done.winfo_ismapped() and self.mcu_box.winfo_ismapped():
+                self._mcu_img = self._fit_photo(
+                    self._mcu_label, self._mcu_img, self._mcu_natural, self._mcu_src,
+                    container=self.done, block=self._mcu_body)
+        except tk.TclError:
+            pass            # the window went away between the event and the refit
+
+    @staticmethod
+    def _fit_photo(label, shown, natural, src, container, block, give=None, reserve=0):
+        """Scale a photo so `container` fits the height it has actually been given.
+
+        Everything in `container` except `block` (the row the photo sets the height
+        of) and `give` (another widget allowed to shrink, like the log) is FIXED:
+        the container's request minus those two. Whatever is left over, less
+        `reserve` kept for `give`, is the photo's -- never above its natural size,
+        never below _STEP_MIN_H.
+
+        Stable by construction: `fixed` excludes the photo's own row, so a refit
+        cannot move the number it was computed from, and a change of a few pixels
+        is ignored rather than rescaled. Returns the image now on the label.
+        """
+        if natural is None or src is None:
+            return shown
+        total = container.winfo_height()
+        if total <= 1:
+            return shown
+        fixed = container.winfo_reqheight() - block.winfo_reqheight()
+        if give is not None:
+            fixed -= give.winfo_reqheight()
+        room = total - fixed - reserve
+        target_h = max(_STEP_MIN_H, min(natural.height(), room))
+        if shown is not None and abs(shown.height() - target_h) < 8:
+            return shown
+        if target_h >= natural.height():
+            img = natural
+        else:
+            img = _scaled_photo(src, max(1, round(src.width() * target_h / src.height())))
+        label.configure(image=img)
+        return img
 
     def _on_ready(self):
         # reveal the COM-port picker for this stage (Skip stays available)
@@ -886,7 +1012,8 @@ class RadioBoardsTab:
             self.sct_baud_row.grid(row=1, column=1, sticky="w", pady=(4, 0))
         else:
             self.sct_baud_row.grid_forget()
-        self.port_row.pack(fill="x", pady=(4, 0))
+        self.port_row.pack(fill="x", pady=(4, 0), before=self.log_lbl)
+        self._schedule_fit()
 
     def _refresh_ports(self):
         ports = list(list_ports.comports())
@@ -934,10 +1061,11 @@ class RadioBoardsTab:
         self.port_row.pack_forget()
         self.skip_btn.pack_forget()
         self.progress["value"] = 0
-        self.progress.pack(fill="x", pady=(6, 0))
+        self.progress.pack(fill="x", pady=(6, 0), before=self.log_lbl)
         self.wstatus.configure(text="Connecting…", foreground="#444")
-        self.wstatus.pack(anchor="w", pady=(4, 0))
-        self.abort_btn.pack(anchor="w", pady=(4, 0))
+        self.wstatus.pack(anchor="w", pady=(4, 0), before=self.log_lbl)
+        self.abort_btn.pack(anchor="w", pady=(4, 0), before=self.log_lbl)
+        self._schedule_fit()
 
         self._writing = True
         self._abort = threading.Event()
@@ -970,7 +1098,8 @@ class RadioBoardsTab:
         nxt = "Next: " + spec.label(self.plan[self.step + 1].kind) if self.step + 1 < len(self.plan) \
             else "Finish this radio"
         self.next_btn.configure(text=nxt)
-        self.next_btn.pack(anchor="w", pady=(6, 0))
+        self.next_btn.pack(anchor="w", pady=(6, 0), before=self.log_lbl)
+        self._schedule_fit()
 
     def _on_stage_error(self, msg, aborted):
         self._writing = False
@@ -1024,10 +1153,11 @@ class RadioBoardsTab:
         fw_done = any(r["kind"] == spec.KIND_FW and r["state"] == "done" for r in self.results)
         if fw_done:
             self.mcu_reset_lbl.configure(text=spec.mcu_reset(self.model))
-            self.mcu_box.pack(fill="x", pady=(4, 8), before=self._again_frame)
+            self.mcu_box.pack(fill="x", pady=(4, 8), after=self.done_summary)
         else:
             self.mcu_box.pack_forget()
-        self.done.pack(fill="both", expand=True)
+        self.done.pack(fill="x")
+        self._schedule_fit()
 
     def _again(self):
         # _begin_radio does the codeplug prompt + view switch; don't hide the done
@@ -1040,7 +1170,7 @@ class RadioBoardsTab:
         self.start_btn.state(["disabled"])
         self.done.pack_forget()
         self.wizard.pack_forget()
-        self.setup.pack(fill="both", expand=True)
+        self.setup.pack(fill="x")
 
     # ---- log helpers --------------------------------------------------------
     def _log(self, msg, cls="info"):

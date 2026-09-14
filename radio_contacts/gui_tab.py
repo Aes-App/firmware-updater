@@ -33,6 +33,7 @@ from typing import Optional
 from serial.tools import list_ports
 
 from radio_fw.engines import AbortedError
+from radio_fw.layout import follow_width
 
 from . import catalog, contact_build, engine, launch
 from . import segments as seg
@@ -50,6 +51,23 @@ _NO_SESSION_TEXT = ("Start at cps.aes.app/tools/contact-lists — the “Open in
 #: `self.source_var.get()` is the whole state — there is no second copy to drift.
 _SOURCE_SERVER = "server"
 _SOURCE_LOCAL = "local"
+
+#: The rows of the tab's grid, top to bottom. Named so a toggle cannot put a
+#: section back in the wrong place.
+(_ROW_INTRO, _ROW_SOURCE, _ROW_SECTION, _ROW_RADIO, _ROW_LIST, _ROW_WRITE,
+ _ROW_PROGRESS, _ROW_STATUS, _ROW_LOG_LABEL, _ROW_LOG) = range(10)
+#: How the log and the local section share a window that is too short -- or too
+#: tall -- for their requests. Grid moves height in PROPORTION to weight, both
+#: ways, so the log gives three times as fast as the tree: while countries are
+#: being picked the log is empty and the tree is what is in use. Proportional
+#: rather than strictly log-first, so a tall window still grows the tree too.
+_LOG_WEIGHT = 3
+_SECTION_WEIGHT = 1
+#: How much of the country tree the local section keeps when the window is too
+#: short for all of it. The rest of that section -- file rows, filter row,
+#: running total, fit message -- is measured, not guessed, since fonts differ
+#: between platforms.
+_TREE_KEEP_PX = 0
 
 #: Blocks per contact, measured on the fixture lists of
 #: tests/test_contacts_local_build.py (3.96 for the 878 family's ASCII records,
@@ -352,22 +370,20 @@ class ContactRefreshTab:
 
     # ---- UI -----------------------------------------------------------------
     def _build(self):
-        outer = ttk.Frame(self.parent, padding=10)
+        outer = self._outer = ttk.Frame(self.parent, padding=10)
         outer.pack(fill="both", expand=True)
 
-        ttk.Label(outer, justify="left", wraplength=680, foreground="#444",
-                  text=("Replaces the digital-contact database on your radio (the caller-ID names shown "
-                        "for DMR IDs). The list can come from your aes.app account, built and verified "
-                        "daily on the server, or you can build one here from a register download of "
-                        "your own. The codeplug — channels, zones, contacts you created, settings — is "
-                        "not touched either way.")
-                  ).pack(fill="x", pady=(0, 8))
+        intro = ttk.Label(outer, justify="left", wraplength=680, foreground="#444",
+                          text=("Replaces the digital-contact database on your radio (the caller-ID names "
+                                "shown for DMR IDs). The list can come from your aes.app account, built "
+                                "and verified daily on the server, or you can build one here from a "
+                                "register download of your own. The codeplug — channels, zones, contacts "
+                                "you created, settings — is not touched either way."))
 
         # 1. where the list comes from. First, because it decides which of the
         # two sections below is even relevant: a link and a server session, or a
         # file on this machine and a country picker.
         src = ttk.LabelFrame(outer, text="1. Where the list comes from")
-        src.pack(fill="x", pady=(0, 6))
         self.source_var = tk.StringVar(value=_SOURCE_SERVER)
         ttk.Radiobutton(src, variable=self.source_var, value=_SOURCE_SERVER,
                         command=self._on_source_change,
@@ -382,7 +398,6 @@ class ContactRefreshTab:
         # one pack_forget()/pack(before=…) pair and cannot leave half a section
         # behind. Only one is ever packed; the radio row below is shared.
         self.server_box = ttk.Frame(outer)
-        self.server_box.pack(fill="x")
         self.local_box = ttk.Frame(outer)
         self._build_local(self.local_box)
 
@@ -392,6 +407,7 @@ class ContactRefreshTab:
         self.session_status = ttk.Label(sess, text=_NO_SESSION_TEXT, justify="left", wraplength=660,
                                         foreground="#8a6d00")
         self.session_status.pack(fill="x", padx=8, pady=(6, 4))
+        follow_width(self.session_status, sess, reserve=20)
         row = ttk.Frame(sess)
         row.pack(fill="x", padx=8, pady=(0, 6))
         ttk.Label(row, text="Paste link:").pack(side="left")
@@ -404,7 +420,6 @@ class ContactRefreshTab:
 
         # 3. radio (shared by both sources)
         rad = self.rad = ttk.LabelFrame(outer, text="3. Radio (switched on, USB cable in)")
-        rad.pack(fill="x", pady=(0, 6))
         prow = ttk.Frame(rad)
         prow.pack(fill="x", padx=8, pady=6)
         ttk.Label(prow, text="COM port:").pack(side="left")
@@ -424,11 +439,11 @@ class ContactRefreshTab:
         self.ident_lbl = ttk.Label(rad, text="Not connected.", foreground="#666", wraplength=660,
                                    justify="left")
         self.ident_lbl.pack(fill="x", padx=8, pady=(0, 6))
+        follow_width(self.ident_lbl, rad, reserve=20)
 
         # 4. list — the server catalog's picker, so it goes away in local mode
         # (where the country picker in section 2 IS the list).
         lst = self.lst = ttk.LabelFrame(outer, text="4. Contact list")
-        lst.pack(fill="x", pady=(0, 6))
         lrow = ttk.Frame(lst)
         lrow.pack(fill="x", padx=8, pady=(6, 2))
         ttk.Label(lrow, text="DMR list:").pack(side="left")
@@ -450,10 +465,10 @@ class ContactRefreshTab:
         self.list_info = ttk.Label(lst, text="Connect the radio and get a link first.", foreground="#666",
                                    wraplength=660, justify="left")
         self.list_info.pack(fill="x", padx=8, pady=(2, 6))
+        follow_width(self.list_info, lst, reserve=20)
 
         # write
         wr = self.wr = ttk.Frame(outer)
-        wr.pack(fill="x", pady=(2, 0))
         self.write_btn = ttk.Button(wr, text="Write to radio", command=self._on_write)
         self.write_btn.pack(side="left")
         self.write_btn.state(["disabled"])
@@ -461,13 +476,42 @@ class ContactRefreshTab:
         self.abort_btn.pack(side="left", padx=8)
         self.abort_btn.state(["disabled"])
         self.progress = ttk.Progressbar(outer, mode="determinate", maximum=100.0)
-        self.progress.pack(fill="x", pady=(6, 0))
         self.wstatus = ttk.Label(outer, text="", foreground="#444", wraplength=680, justify="left")
-        self.wstatus.pack(fill="x", pady=(4, 0))
 
-        ttk.Label(outer, text="Protocol log").pack(anchor="w", pady=(8, 0))
-        self.log = scrolledtext.ScrolledText(outer, height=7, wrap="word", state="disabled")
-        self.log.pack(fill="both", expand=True)
+        log_lbl = ttk.Label(outer, text="Protocol log")
+        self.log = scrolledtext.ScrolledText(outer, height=3, wrap="word", state="disabled")
+
+        # A GRID, NOT PACK, and the reason is what happens when the window is too
+        # short for everything -- which, in local-build mode, it is at any laptop
+        # height. Pack hands out space in packing order and gives the last widget
+        # whatever is left, so SOMETHING is always dropped whole: built top to
+        # bottom it dropped Write to radio itself, and reordered to protect the
+        # buttons it squeezed the country tree to a single row. Neither is right.
+        #
+        # Grid shrinks rows by WEIGHT, down to a minimum, and leaves weight-0 rows
+        # alone. So every control is a weight-0 row and never shrinks; the source
+        # section and the protocol log are the only rows that give, the log three
+        # times as fast (_LOG_WEIGHT), and the section never goes below what it needs WITHOUT its tree --
+        # the tree scrolls, the fit message and file rows do not. A tall window
+        # grows the same two rows in the same proportion.
+        outer.columnconfigure(0, weight=1)
+        # Every explanatory line wraps at the width the tab really has: at a fixed
+        # 660-680 px they broke at ~60% of the window and spent the rest as extra
+        # lines, which is height this tab does not have to spare.
+        follow_width(intro, outer, reserve=8)
+        follow_width(self.wstatus, outer, reserve=8)
+        intro.grid(row=_ROW_INTRO, column=0, sticky="ew", pady=(0, 8))
+        src.grid(row=_ROW_SOURCE, column=0, sticky="ew", pady=(0, 6))
+        self.server_box.grid(row=_ROW_SECTION, column=0, sticky="ew")
+        rad.grid(row=_ROW_RADIO, column=0, sticky="ew", pady=(0, 6))
+        lst.grid(row=_ROW_LIST, column=0, sticky="ew", pady=(0, 6))
+        wr.grid(row=_ROW_WRITE, column=0, sticky="ew", pady=(2, 0))
+        self.progress.grid(row=_ROW_PROGRESS, column=0, sticky="ew", pady=(6, 0))
+        self.wstatus.grid(row=_ROW_STATUS, column=0, sticky="ew", pady=(4, 0))
+        log_lbl.grid(row=_ROW_LOG_LABEL, column=0, sticky="w", pady=(8, 0))
+        self.log.frame.grid(row=_ROW_LOG, column=0, sticky="nsew")
+        outer.rowconfigure(_ROW_LOG, weight=_LOG_WEIGHT)
+        self._size_section_row()
         for tag, color in _LOG_TAGS.items():
             self.log.tag_configure(tag, foreground=color)
 
@@ -482,11 +526,13 @@ class ContactRefreshTab:
         """
         loc = ttk.LabelFrame(parent, text="2. Your own register download")
         loc.pack(fill="both", expand=True, pady=(0, 6))
-        ttk.Label(loc, justify="left", wraplength=660, foreground="#444",
-                  text=("Your own user.csv from the register (RadioID.net ▸ Database), built into the "
-                        "radio's contact database here — nothing uploaded, nothing fetched. nxdn.csv "
-                        "is optional; only the D890 family has an NXDN list to put it in.")
-                  ).pack(fill="x", padx=8, pady=(6, 4))
+        loc_intro = ttk.Label(
+            loc, justify="left", wraplength=660, foreground="#444",
+            text=("Your own user.csv from the register (RadioID.net ▸ Database), built into the "
+                  "radio's contact database here — nothing uploaded, nothing fetched. nxdn.csv "
+                  "is optional; only the D890 family has an NXDN list to put it in."))
+        loc_intro.pack(fill="x", padx=8, pady=(6, 4))
+        follow_width(loc_intro, loc, reserve=20)
 
         # Choosing a file reads it -- that is what picking a file means. There
         # used to be a "Read the file" button beside Browse for the re-read after
@@ -565,8 +611,12 @@ class ContactRefreshTab:
         except tk.TclError:
             pass
 
+        # The running total and the fit message sit under the tree but are packed
+        # AHEAD of it, against the bottom of this section: the fit message is the
+        # line that says why Write is disabled, and on a short window it was the
+        # first thing clipped. The tree scrolls; it is the one that gives.
         srow = ttk.Frame(loc)
-        srow.pack(fill="x", padx=8, pady=(6, 2))
+        srow.pack(side="bottom", fill="x", padx=8, pady=(6, 2), before=frow)
         self.sel_lbl = ttk.Label(srow, text="No file read yet.", font=("", 13, "bold"))
         self.sel_lbl.pack(side="left")
         # The read's own state -- its progress, what it skipped, why it failed --
@@ -577,7 +627,8 @@ class ContactRefreshTab:
                                   justify="right", anchor="e")
         self.read_lbl.pack(side="right")
         self.fit_lbl = ttk.Label(loc, text="", wraplength=660, justify="left", foreground="#8a6d00")
-        self.fit_lbl.pack(fill="x", padx=8, pady=(0, 8))
+        self.fit_lbl.pack(side="bottom", fill="x", padx=8, pady=(0, 8), before=srow)
+        follow_width(self.fit_lbl, loc, reserve=20)
 
     # ---- which source ------------------------------------------------------
     def _is_local(self) -> bool:
@@ -600,14 +651,38 @@ class ContactRefreshTab:
             return
         self._source = self.source_var.get()
         if self._is_local():
-            self.server_box.pack_forget()
-            self.lst.pack_forget()
-            self.local_box.pack(fill="both", expand=True, before=self.rad)
+            self.server_box.grid_remove()
+            self.lst.grid_remove()
+            self.local_box.grid(row=_ROW_SECTION, column=0, sticky="nsew")
         else:
-            self.local_box.pack_forget()
-            self.server_box.pack(fill="x", before=self.rad)
-            self.lst.pack(fill="x", pady=(0, 6), before=self.wr)
+            self.local_box.grid_remove()
+            self.server_box.grid(row=_ROW_SECTION, column=0, sticky="ew")
+            self.lst.grid(row=_ROW_LIST, column=0, sticky="ew", pady=(0, 6))
+        self._size_section_row()
         self._refresh_radio_state()
+
+    def _size_section_row(self):
+        """Give the source section its share of spare -- or missing -- height.
+
+        The local section holds the country tree, which scrolls, so it shares
+        any shortfall with the log -- the log giving three times as fast -- and
+        stops at its own
+        height without the tree: below that it would start clipping the fit
+        message, the one line that says why Write is disabled. The link section
+        has nothing to scroll, so it keeps its height and the log alone gives.
+
+        Measured after Tk has laid the section out, so the floor is right for
+        this platform's fonts rather than for whichever machine wrote it.
+        """
+        if not self._is_local():
+            self._outer.rowconfigure(_ROW_SECTION, weight=0, minsize=0)
+            return
+        try:
+            self._outer.update_idletasks()
+            floor = self.local_box.winfo_reqheight() - self.tree.winfo_reqheight() + _TREE_KEEP_PX
+        except tk.TclError:
+            return
+        self._outer.rowconfigure(_ROW_SECTION, weight=_SECTION_WEIGHT, minsize=max(0, floor))
 
     # ---- session ------------------------------------------------------------
     def handle_launch_url(self, url: str):

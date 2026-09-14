@@ -25,7 +25,7 @@ from .client import MODELS, firmware_kind, make_client, scan_devices
 APP_TITLE = "AesApp Radio Updater"
 VENDOR = "AesApp Inc."
 WEBSITE = "https://aes.app/"
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 LOG_PREFIX = "[aesapp]"
 
 # Report this version to the firmware server on its API queries (User-Agent + a

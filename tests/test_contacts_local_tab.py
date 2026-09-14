@@ -140,7 +140,7 @@ def test_switching_to_a_local_build_asks_for_no_link_or_session(tab):
     widget in a window that was never shown, so it would pass for the wrong
     reason."""
     _local(tab)
-    assert tab.local_box.winfo_manager() == "pack"
+    assert tab.local_box.winfo_manager() == "grid"
     assert tab.server_box.winfo_manager() == "", "the link section must be out of the way"
     assert tab.lst.winfo_manager() == "", "the server's bundle picker has nothing to show"
     assert tab.session is None and tab.token is None
@@ -150,9 +150,9 @@ def test_switching_to_a_local_build_asks_for_no_link_or_session(tab):
     # and back: the link section returns and the local one goes away
     tab.source_var.set(gt._SOURCE_SERVER)
     tab._on_source_change()
-    assert tab.server_box.winfo_manager() == "pack"
+    assert tab.server_box.winfo_manager() == "grid"
     assert tab.local_box.winfo_manager() == ""
-    assert tab.lst.winfo_manager() == "pack"
+    assert tab.lst.winfo_manager() == "grid"
 
 
 def test_a_link_arriving_switches_back_to_the_server_source(tab):
@@ -162,7 +162,7 @@ def test_a_link_arriving_switches_back_to_the_server_source(tab):
     _local(tab)
     tab.handle_launch_url("aesapp://contacts?token=" + "A" * 43)
     assert not tab._is_local()
-    assert tab.server_box.winfo_manager() == "pack"
+    assert tab.server_box.winfo_manager() == "grid"
 
 
 # ---- the write gate ---------------------------------------------------------
