@@ -1,0 +1,536 @@
+from __future__ import annotations
+
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+tk = pytest.importorskip("tkinter")
+
+from radio_contacts import gui_tab as gt
+from radio_contacts import segments as seg
+
+cb = gt.contact_build
+
+
+@pytest.fixture()
+def tab():
+    try:
+        root = tk.Tk()
+    except Exception as e:
+        pytest.skip(f"no Tk display: {e}")
+    root.withdraw()
+    frame = tk.Frame(root)
+    t = gt.ContactRefreshTab(frame, root)
+    yield t
+    try:
+        root.destroy()
+    except Exception:
+        pass
+
+
+def _pump(tab, times=3):
+    for _ in range(times):
+        tab._drain()
+
+
+class _Ident:
+
+    def __init__(self, model="D890UV", version="V100"):
+        self.model = model
+        self.version = version
+        self.band = 0
+
+
+ROWS = [("United Kingdom", 5), ("Germany", 3), ("Japan", 50), ("China", 7),
+        ("United States", 2), ("", 1), ("Ruritania", 4)]
+
+
+def _store(rows=ROWS):
+    store = cb.ContactStore()
+    rid = 3101234
+    for country, count in rows:
+        for _ in range(count):
+            rid += 3
+            store.ids.append(rid)
+            store.callsigns.append("VA7TST")
+            store.names.append("Name")
+            store.cities.append("Vancouver")
+            store.states.append("BC")
+            store.countries.append(country)
+            store.codes.append(cb.country_code(country))
+    return store
+
+
+def _local(tab):
+    tab.source_var.set(gt._SOURCE_LOCAL)
+    tab._on_source_change()
+
+
+def _load(tab, store=None):
+    store = _store() if store is None else store
+    tab.user_path = "/tmp/user.csv"
+    tab._post("local_store", store)
+    _pump(tab)
+    return store
+
+
+def _port(tab, port="COM9"):
+    tab._port_map = {port: port}
+    tab.port_var.set(port)
+
+
+def _connect(tab, model="D890UV"):
+    tab._post("ident_ok", (_Ident(model), object()))
+    _pump(tab)
+
+
+def _ready(tab, model="D890UV"):
+    _local(tab)
+    _load(tab)
+    tab._select_codes({"GBR"})
+    _port(tab)
+    _connect(tab, model)
+
+
+def test_switching_to_a_local_build_asks_for_no_link_or_session(tab):
+    _local(tab)
+    assert tab.local_box.winfo_manager() == "grid"
+    assert tab.server_box.winfo_manager() == "", "the link section must be out of the way"
+    assert tab.lst.winfo_manager() == "", "the server's bundle picker has nothing to show"
+    assert tab.session is None and tab.token is None
+    assert "user.csv" in tab.fit_lbl.cget("text"), \
+        "the gate must ask for the file, not for a link"
+
+    tab.source_var.set(gt._SOURCE_SERVER)
+    tab._on_source_change()
+    assert tab.server_box.winfo_manager() == "grid"
+    assert tab.local_box.winfo_manager() == ""
+    assert tab.lst.winfo_manager() == "grid"
+
+
+def test_a_link_arriving_switches_back_to_the_server_source(tab):
+    _local(tab)
+    tab.handle_launch_url("aesapp://contacts?token=" + "A" * 43)
+    assert not tab._is_local()
+    assert tab.server_box.winfo_manager() == "grid"
+
+
+def test_a_store_a_ticked_country_and_a_connected_radio_enable_write(tab):
+    _ready(tab)
+    assert tab.session is None, "a local build must not need a server session"
+    assert tab.token is None, "a local build must not need a launch token"
+    assert "disabled" not in tab.write_btn.state()
+    assert tab.fit_lbl.cget("text").startswith("Ready:")
+    assert "5 DMR contacts" in tab.fit_lbl.cget("text")
+    assert "AnyTone AT-D890UV" in tab.ident_lbl.cget("text")
+
+
+def test_each_missing_piece_keeps_write_disabled_and_names_itself(tab):
+    _local(tab)
+    assert "disabled" in tab.write_btn.state()
+    assert "user.csv" in tab.fit_lbl.cget("text")
+
+    _load(tab)
+    assert "disabled" in tab.write_btn.state()
+    assert "Nothing is selected" in tab.fit_lbl.cget("text"), \
+        "nothing selected is nothing to write, and it must say so"
+
+    tab._select_codes({"GBR"})
+    assert "disabled" in tab.write_btn.state()
+    assert "Connect the radio" in tab.fit_lbl.cget("text")
+
+    _port(tab)
+    _connect(tab)
+    assert "disabled" not in tab.write_btn.state()
+
+    tab._select_codes(set())
+    assert "disabled" in tab.write_btn.state()
+
+
+def test_an_over_capacity_selection_keeps_write_disabled_and_names_the_numbers(tab, monkeypatch):
+    monkeypatch.setitem(cb.RADIOS, "TINYUV",
+                        cb.RadioSpec("TINYUV", "Tiny AT-D1UV", "anytone_878", None, 5))
+    _local(tab)
+    _load(tab)
+    _port(tab)
+    _connect(tab, "TINYUV")
+
+    tab._select_codes({"GBR"})
+    assert "disabled" not in tab.write_btn.state(), "a list that exactly fits must be writable"
+
+    tab._select_codes({"GBR", "DEU"})
+    assert "disabled" in tab.write_btn.state()
+    msg = tab.fit_lbl.cget("text")
+    assert "8 DMR contacts is more than the 5" in msg
+    assert "Tiny AT-D1UV" in msg
+    assert "untick" in msg
+
+
+def test_a_radio_this_app_cannot_build_for_is_refused_by_name(tab):
+    _local(tab)
+    _load(tab)
+    tab._select_codes({"GBR"})
+    _port(tab)
+    _connect(tab, "D868UV")
+    assert tab.spec is None
+    assert "disabled" in tab.write_btn.state()
+    assert "AT-D868UV" in tab.fit_lbl.cget("text"), \
+        "naming the radio is the difference between a refusal and a fault"
+
+
+def test_the_picker_renders_group_facets_order_and_counts(tab):
+    _local(tab)
+    store = _load(tab)
+    want = cb.group_facets(store.facets())
+
+    groups = tab.tree.get_children("")
+    assert len(groups) == len(want)
+    for gid, (_key, name, total, members) in zip(groups, want):
+        assert name in tab.tree.item(gid, "text")
+        assert tab.tree.item(gid, "values")[0] == format(total, ",")
+        kids = tab.tree.get_children(gid)
+        assert [tab.tree.item(k, "values")[0] for k in kids] == \
+            [format(f.count, ",") for f in members]
+        assert [tab._item_code[k] for k in kids] == [f.code for f in members]
+
+    assert "Asia" in tab.tree.item(groups[0], "text")
+    assert "Japan" in tab.tree.item(tab.tree.get_children(groups[0])[0], "text")
+    assert all(gt._TICK_OFF in tab.tree.item(g, "text") for g in groups)
+    assert tab._sel_count == 0
+
+
+def test_a_group_row_ticks_and_clears_its_whole_group(tab):
+    _local(tab)
+    _load(tab)
+    europe = next(g for g in tab.tree.get_children("")
+                  if "Europe" in tab.tree.item(g, "text"))
+
+    tab._toggle_item(europe)
+    assert tab._sel_codes == {"GBR", "DEU"}
+    assert tab._sel_count == 8
+    assert gt._TICK_ON in tab.tree.item(europe, "text")
+
+    tab._toggle_item(tab.tree.get_children(europe)[0])
+    assert tab._sel_codes == {"DEU"}
+    assert gt._TICK_SOME in tab.tree.item(europe, "text"), \
+        "a partly ticked group must not read as a full one"
+
+    tab._toggle_item(europe)
+    assert tab._sel_codes == {"GBR", "DEU"}
+    tab._toggle_item(europe)
+    assert tab._sel_codes == set()
+
+
+def test_a_real_click_on_a_country_row_ticks_it(tab):
+    tab.parent.pack(fill="both", expand=True)
+    tab.root.geometry("900x900+40+40")
+    tab.root.deiconify()
+    _local(tab)
+    _load(tab)
+    tab.root.update()
+    group = tab.tree.get_children("")[0]
+    child = tab.tree.get_children(group)[0]
+    box = tab.tree.bbox(child)
+    if not box:
+        pytest.skip("the tree was never laid out (no usable display)")
+
+    tab.tree.event_generate("<Button-1>", x=box[0] + 20, y=box[1] + box[3] // 2)
+    tab.root.update()
+    assert tab._sel_codes == {tab._item_code[child]}
+    assert gt._TICK_ON in tab.tree.item(child, "text")
+
+    gbox = tab.tree.bbox(group)
+    tab.tree.event_generate("<Button-1>", x=gbox[0] + 6, y=gbox[1] + gbox[3] // 2)
+    tab.root.update()
+    assert tab._sel_codes == {tab._item_code[child]}, "the expander must not tick the group"
+
+
+def test_the_filter_changes_what_is_drawn_and_not_what_is_ticked(tab):
+    _local(tab)
+    _load(tab)
+    tab._on_select_all()
+    picked = set(tab._sel_codes)
+    count = tab._sel_count
+
+    tab.filter_var.set("germ")
+    shown = [tab._item_code[k] for g in tab.tree.get_children("")
+             for k in tab.tree.get_children(g)]
+    assert shown == ["DEU"]
+    assert tab._sel_codes == picked, "filtering must not change the selection"
+    assert tab._sel_count == count
+
+    tab.filter_var.set("")
+    assert len(tab._sel_codes) == len(picked)
+
+
+def test_the_write_worker_builds_the_plan_here_instead_of_downloading(tab, monkeypatch):
+    captured = {}
+
+    def fake_write(port, plan, on_log, on_progress, abort=None, expect_model=None,
+                   pace_ms=0, link=None):
+        captured.update(plan=list(plan), port=port, model=expect_model, link=link)
+        return {"blocks": seg.block_count(plan), "frames": 1, "seconds": 1.0, "retries": 0}
+
+    def no_download(*_a, **_k):
+        raise AssertionError("a locally built list must never fetch anything")
+
+    monkeypatch.setattr(gt.engine, "write_contacts", fake_write)
+    monkeypatch.setattr(gt.catalog, "download_artifact", no_download)
+
+    _local(tab)
+    store = _load(tab)
+    held = object()
+    tab._write_worker("COM9", "https://cps.aes.app", None, None, None, "D878UV", None, held,
+                      local={"store": store, "spec": cb.radio_for_ident("D878UV"),
+                             "codes": ["GBR", "DEU"], "count": 8, "nx": None,
+                             "name": "user.csv"})
+    _pump(tab)
+
+    assert captured["model"] == "D878UV"
+    assert captured["link"] is held, "the held PC-mode session must still be reused"
+    want = cb.build_dmr_segments(store, "anytone_878", ["GBR", "DEU"])
+    assert [(s.addr, s.data) for s in captured["plan"]] == [(s.addr, s.data) for s in want]
+    assert "built on this computer" in tab.log.get("1.0", "end")
+    assert "Done" in tab.wstatus.cget("text")
+
+
+def test_a_builder_refusal_reaches_the_operator_word_for_word(tab, monkeypatch):
+    def boom(*_a, **_k):
+        raise cb.ContactBuildError("radio ID 99999999 cannot be stored in this contact format")
+
+    monkeypatch.setattr(gt.contact_build, "build_dmr_segments", boom)
+    monkeypatch.setattr(gt.engine, "write_contacts",
+                        lambda *a, **k: pytest.fail("nothing may be written after a refusal"))
+    _local(tab)
+    store = _load(tab)
+    tab._write_worker("COM9", "https://cps.aes.app", None, None, None, "D878UV", None, None,
+                      local={"store": store, "spec": cb.radio_for_ident("D878UV"),
+                             "codes": ["GBR"], "count": 5, "nx": None, "name": "user.csv"})
+    _pump(tab)
+    assert "radio ID 99999999 cannot be stored" in tab.wstatus.cget("text")
+    assert tab._writing is False
+
+
+NX_ROWS = [{"RADIO_ID": 1, "COUNTRY": "Japan"}, {"RADIO_ID": 2, "COUNTRY": "Japan"},
+           {"RADIO_ID": 3, "COUNTRY": "Norway"}, {"RADIO_ID": 4, "COUNTRY": "United States"}]
+
+
+def _load_nx(tab, rows=None):
+    tab.nx_path = "/tmp/nxdn.csv"
+    tab._post("local_nx", NX_ROWS if rows is None else rows)
+    _pump(tab)
+
+
+def _row_counts(tab):
+    out = {}
+    for gid in tab.tree.get_children(""):
+        for cid in tab.tree.get_children(gid):
+            out[tab._item_name[cid]] = tab.tree.item(cid, "values")[0]
+    return out
+
+
+def test_the_picker_counts_both_lists_when_the_nxdn_half_is_included(tab):
+    _local(tab)
+    _load(tab)
+    tab.spec = cb.radio_for_ident("D890UV")
+    assert _row_counts(tab)["Japan"] == "50"
+
+    _load_nx(tab)
+    counts = _row_counts(tab)
+    assert counts["Japan"] == "52"
+    assert counts["Norway"] == "1"
+    assert counts["United Kingdom"] == "5", "a DMR-only country is unchanged"
+
+    asia = next(m for key, _n, _t, m in tab._groups if key == "AS")
+    assert [f.count for f in asia] == sorted([f.count for f in asia], reverse=True)
+
+
+def test_unticking_include_puts_the_counts_back(tab):
+    _local(tab)
+    _load(tab)
+    tab.spec = cb.radio_for_ident("D890UV")
+    _load_nx(tab)
+    assert _row_counts(tab)["Japan"] == "52"
+
+    tab.nx_local_var.set(False)
+    tab._on_nx_include()
+    counts = _row_counts(tab)
+    assert counts["Japan"] == "50"
+    assert "Norway" not in counts, "an NXDN-only country has nothing to offer now"
+
+
+def test_the_nxdn_half_is_filtered_by_the_same_countries(tab):
+    _local(tab)
+    _load(tab)
+    _port(tab)
+    _connect(tab)
+    _load_nx(tab)
+
+    tab._select_codes({"JPN"})
+    assert [r["RADIO_ID"] for r in tab._nx_selected()] == [1, 2], "only Japan's NXDN rows"
+
+    tab._select_codes({"GBR"})
+    assert tab._nx_selected() == [], "the DMR-only country keeps no NXDN row"
+    assert "only the DMR list" in tab._local_gate()[1]
+
+    tab._select_codes({"JPN"})
+    _connect(tab, "D878UV2")
+    assert tab._nx_selected() == []
+    assert not tab._include_nx()
+
+
+def test_a_wheel_notch_moves_the_picker_by_rows_not_pages(tab, monkeypatch):
+    _local(tab)
+    _load(tab)
+    moved = []
+    monkeypatch.setattr(tab.tree, "yview_scroll", lambda n, what: moved.append((n, what)))
+
+    class _Wheel:
+        def __init__(self, delta):
+            self.delta = delta
+            self.num = 0
+
+    tab._on_wheel(_Wheel(10))
+    tab._on_wheel(_Wheel(-10))
+    assert moved == [(-1, "units"), (1, "units")]
+
+    moved.clear()
+    tab._on_wheel(_Wheel(400))
+    assert moved == [(-gt._WHEEL_MAX_ROWS, "units")]
+
+    moved.clear()
+    ev = _Wheel(0)
+    ev.num = 5
+    tab._on_wheel(ev)
+    assert moved == [(1, "units")]
+
+    assert tab._on_wheel(_Wheel(10)) == "break"
+
+
+def _pack(dx, dy):
+    return (dx << 16) | (dy & 0xFFFF)
+
+
+def test_a_trackpad_scrolls_the_picker_smoothly_and_never_by_pages(tab, monkeypatch):
+    _local(tab)
+    _load(tab)
+    moved = []
+    monkeypatch.setattr(tab.tree, "yview_scroll", lambda n, what: moved.append(n))
+
+    class _Pad:
+        def __init__(self, packed):
+            self.delta = packed
+
+    for _ in range(5):
+        tab._on_touchpad(_Pad(_pack(0, 1)))
+    assert moved == [-1], f"five small events should be one row, got {moved}"
+
+    moved.clear()
+    tab._on_touchpad(_Pad(_pack(0, 200)))
+    assert moved == [-gt._WHEEL_MAX_ROWS]
+
+    moved.clear()
+    tab._pad_accum = 0.0
+    for _ in range(5):
+        tab._on_touchpad(_Pad(_pack(0, -1)))
+    assert moved == [1]
+
+    moved.clear()
+    tab._on_touchpad(_Pad(_pack(7, 0)))
+    assert moved == []
+    assert tab._on_touchpad(_Pad(_pack(0, 5))) == "break"
+
+
+def test_the_scroll_bindings_are_actually_on_the_widget(tab):
+    _local(tab)
+    _load(tab)
+    seen = []
+    tab._on_wheel = lambda e: seen.append("wheel") or "break"
+    tab._on_touchpad = lambda e: seen.append("pad") or "break"
+    tab.tree.bind("<MouseWheel>", tab._on_wheel)
+    try:
+        tab.tree.bind("<TouchpadScroll>", tab._on_touchpad)
+    except tk.TclError:
+        pytest.skip("this Tk has no TouchpadScroll event")
+
+    tab.tree.update_idletasks()
+    tab.tree.event_generate("<MouseWheel>", delta=-40, when="now")
+    tab.tree.event_generate("<TouchpadScroll>", delta=_pack(0, 3), when="now")
+    tab.tree.update()
+    assert seen == ["wheel", "pad"]
+
+
+def test_the_continents_start_folded(tab):
+    _local(tab)
+    _load(tab)
+    groups = tab.tree.get_children("")
+    assert groups, "there should be continents to fold"
+    assert all(not tab.tree.item(g, "open") for g in groups)
+
+    tab.filter_var.set("germ")
+    assert all(tab.tree.item(g, "open") for g in tab.tree.get_children("")), \
+        "a search must open what it kept"
+
+    tab.filter_var.set("")
+    assert all(not tab.tree.item(g, "open") for g in tab.tree.get_children(""))
+
+
+def test_the_preview_line_breaks_the_two_databases_out(tab):
+    _local(tab)
+    _load(tab)
+    _connect(tab)
+    tab._select_codes({"JPN"})
+    assert tab.sel_lbl.cget("text") == "50 contacts selected"
+
+    _load_nx(tab)
+    tab._select_codes({"JPN"})
+    assert tab.sel_lbl.cget("text") == "52 contacts selected (50 DMR + 2 NXDN)"
+
+    tab._select_codes({"GBR"})
+    assert tab.sel_lbl.cget("text") == "5 contacts selected"
+
+
+def test_the_nxdn_ceiling_is_its_own_pool(tab, monkeypatch):
+    _local(tab)
+    _load(tab)
+    _port(tab)
+    _connect(tab)
+    _load_nx(tab)
+    tab._select_codes({"JPN"})
+    assert tab.spec.capacity == 500000 and tab.spec.nx_capacity == 80000
+
+    monkeypatch.setattr(tab, "_nx_selected", lambda: [{"RADIO_ID": 1}] * 90000)
+    ok, msg, _colour = tab._local_gate()
+    assert not ok
+    assert "90,000 NXDN contacts is more than the 80,000" in msg
+    assert "DMR list has its own room" in msg
+
+    monkeypatch.setattr(tab, "_nx_selected", lambda: [{"RADIO_ID": 1}] * 70000)
+    ok, msg, _colour = tab._local_gate()
+    assert not ok
+    assert "this app can lay out safely" in msg and "80,000" in msg
+
+
+def test_the_write_status_recovers_when_the_nxdn_read_finishes(tab):
+    _local(tab)
+    _load(tab)
+    _port(tab)
+    _connect(tab)
+    tab._select_codes({"JPN"})
+    assert "Ready" in tab.fit_lbl.cget("text")
+
+    tab.nx_path = "/tmp/nxdn.csv"
+    tab._nx_reading = True
+    tab._refresh_local_summary()
+    assert "Reading the file" in tab.fit_lbl.cget("text")
+
+    tab._post("local_nx", NX_ROWS)
+    _pump(tab)
+
+    assert "Reading the file" not in tab.fit_lbl.cget("text"), \
+        "the gate is still reporting a read that finished"
+    assert "Ready" in tab.fit_lbl.cget("text")
+    assert tab.sel_lbl.cget("text") == "52 contacts selected (50 DMR + 2 NXDN)"

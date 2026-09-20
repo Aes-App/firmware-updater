@@ -1,0 +1,1097 @@
+from __future__ import annotations
+
+import os
+import struct
+import sys
+import threading
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from radio_fw import engines
+from radio_fw.vendor import fwupd_nr
+from radio_fw.vendor import fwupd_sct
+
+
+class FakeSerial:
+
+    def __init__(self, device=None):
+        self._baud = 0
+        self.is_open = False
+        self.device = device
+        self._rx = bytearray()
+        self.tx = bytearray()
+        self.opens = []
+        self.baud_changes = []
+        self.signals = []
+        self.closes = 0
+        self.timeout = 0
+        self.write_timeout = 0
+        self.port = None
+        self.bytesize = self.parity = self.stopbits = None
+        self.rtscts = False
+        self.dsrdtr = False
+        self.dtr = None
+        self.rts = None
+        self.raise_on_read = None
+        if device is not None:
+            device.port = self
+
+    @property
+    def baudrate(self):
+        return self._baud
+
+    @baudrate.setter
+    def baudrate(self, v):
+        self._baud = v
+        if self.is_open:
+            self.baud_changes.append(v)
+
+    def open(self):
+        self.is_open = True
+        self.opens.append(self._baud)
+        self.signals.append((self.dtr, self.rts))
+        if self.device and hasattr(self.device, "on_open"):
+            self.device.on_open(self)
+
+    @property
+    def in_waiting(self):
+        if self.raise_on_read is not None:
+            raise self.raise_on_read
+        return len(self._rx)
+
+    def read(self, n):
+        if self.raise_on_read is not None:
+            raise self.raise_on_read
+        if not self._rx and self.device and hasattr(self.device, "on_poll"):
+            self.device.on_poll(self)
+        if not self._rx and self.timeout:
+            time.sleep(min(self.timeout, 0.002))
+        out = bytes(self._rx[:n])
+        del self._rx[:n]
+        return out
+
+    def write(self, b):
+        b = bytes(b)
+        self.tx += b
+        if self.device and hasattr(self.device, "on_host_bytes"):
+            self.device.on_host_bytes(self, b)
+        return len(b)
+
+    def reset_input_buffer(self):
+        self._rx = bytearray()
+
+    def close(self):
+        if self.is_open:
+            self.closes += 1
+        self.is_open = False
+
+    def feed(self, b):
+        self._rx += bytes(b)
+
+
+def _install(monkeypatch_or_none, device):
+    fake = FakeSerial(device)
+    engines.serial.Serial = lambda *a, **k: fake
+    return fake
+
+
+_REAL_SERIAL_CLASS = engines.serial.Serial
+
+
+def _restore():
+    engines.serial.Serial = _REAL_SERIAL_CLASS
+
+
+class CpsDevice:
+
+    def __init__(self, kind, ident_hex=None, codeplug_mode=False, ack_finish=None,
+                 nak_frame=None, drop_ack_at=None):
+        self.kind = kind
+        self.hs = b"PROGRAM" if kind == "icon" else b"UPDATE"
+        self.ident = bytes.fromhex(ident_hex) if ident_hex else None
+        self.codeplug = codeplug_mode
+        self.ack_finish = ack_finish if ack_finish is not None else (kind == "icon")
+        self.nak_frame = nak_frame
+        self.drop_ack_at = drop_ack_at
+        self.state = "hs"
+        self.buf = bytearray()
+        self.frames = []
+        self.finish_byte = None
+        self.bad_checksum = False
+
+    def on_open(self, ser):
+        pass
+
+    def on_host_bytes(self, ser, data):
+        self.buf += data
+        while True:
+            if self.state == "hs":
+                if len(self.buf) < len(self.hs):
+                    return
+                if bytes(self.buf[:len(self.hs)]) != self.hs:
+                    return
+                del self.buf[:len(self.hs)]
+                if self.codeplug:
+                    ser.feed(bytes.fromhex("515806"))
+                    self.state = "dead"
+                    return
+                ser.feed(b"\x06")
+                self.state = "ident" if self.kind in ("fw", "aprs") else "frames"
+            elif self.state == "ident":
+                if len(self.buf) < 1:
+                    return
+                q = self.buf[0]
+                del self.buf[:1]
+                if q != 0x02:
+                    return
+                ser.feed(self.ident)
+                self.state = "frames"
+            elif self.state == "frames":
+                if len(self.buf) < 1:
+                    return
+                if self.buf[0] == 0x18:
+                    del self.buf[:1]
+                    self.finish_byte = 0x18
+                    if self.ack_finish:
+                        ser.feed(b"\x06")
+                    self.state = "done"
+                    return
+                if len(self.buf) < 40:
+                    return
+                frame = bytes(self.buf[:40])
+                del self.buf[:40]
+                idx = len(self.frames)
+                self.frames.append(frame)
+                s = sum(frame[1:37]) & 0xFFFF
+                stored = frame[37] | (frame[38] << 8)
+                if frame[0] != 0x01 or frame[39] != 0x06 or s != stored:
+                    self.bad_checksum = True
+                    ser.feed(b"\x15")
+                    return
+                if self.nak_frame == idx:
+                    ser.feed(b"\x15")
+                    return
+                if self.drop_ack_at == idx:
+                    return
+                ser.feed(b"\x06")
+            else:
+                return
+
+
+class SctDevice:
+
+    def __init__(self, manifest, wrong_ack_at=None, first_ack=None,
+                 nak_at=None, silent_at=None):
+        self.m = manifest
+        self.wrong_ack_at = wrong_ack_at
+        self.first_ack = first_ack
+        self.nak_at = nak_at
+        self.silent_at = silent_at
+        self.seen = []
+        self.buf = bytearray()
+        self.write_ack = bytes.fromhex(manifest["session"]["write_ack"])
+        self.plan = engines.plan_sct(self._artifact_placeholder(), manifest) if False else None
+        self.kinds = [row[2] for row in manifest["frame_index"]]
+        self.control_acks = []
+        for c in manifest.get("controls", []):
+            for a in c.get("acks", []):
+                self.control_acks.append(bytes.fromhex(a))
+        self.idx = 0
+        self.ci = 0
+        self.frames_seen = 0
+
+    def _artifact_placeholder(self):
+        return b""
+
+    def on_open(self, ser):
+        pass
+
+    def on_host_bytes(self, ser, data):
+        self.buf += data
+        while True:
+            if self.idx >= len(self.kinds):
+                return
+            frame = self._take_frame()
+            if frame is None:
+                return
+            i = self.idx
+            self.seen.append((i, frame))
+            if i == self.silent_at:
+                self.silent_at = None
+                continue
+            if i == self.nak_at:
+                self.nak_at = None
+                ser.feed(SCT_NAK_FRAME)
+                continue
+            kind = self.kinds[i]
+            if kind == "write":
+                ack = self.write_ack
+            else:
+                ack = self.control_acks[self.ci]
+                self.ci += 1
+            if i == 0 and self.first_ack is not None:
+                ack = self.first_ack
+            if self.frames_seen == self.wrong_ack_at:
+                bad = bytearray(ack)
+                bad[6] ^= 0xFF
+                ack = bytes(bad)
+            self.frames_seen += 1
+            self.idx += 1
+            ser.feed(ack)
+
+    def _take_frame(self):
+        if len(self.buf) < 6:
+            return None
+        if bytes(self.buf[:3]) != b"\x84\xa9\x61":
+            del self.buf[:1]
+            return None
+        length = (self.buf[3] << 8) | self.buf[4]
+        total = 6 + length
+        if total % 2:
+            total += 1
+        if len(self.buf) < total:
+            return None
+        frame = bytes(self.buf[:total])
+        del self.buf[:total]
+        return frame
+
+
+class NrDevice:
+
+    def __init__(self, ufw, manifest, zero_read=False):
+        self.ufw = ufw
+        self.m = manifest
+        self.zero_read = zero_read
+        self.buf = bytearray()
+        self.served = bytearray(len(ufw))
+        self.served_bytes = 0
+        self.bad_slice = False
+        self.stopped = False
+        self.len_notify_reply = None
+        self.baud_offers = []
+        self.errors = []
+        self.cursor = 0
+        self.plan = self._build_plan()
+
+    def _reads_for(self, off, length, block=512, descending=False):
+        out = []
+        n = (length + block - 1) // block
+        for i in range(n):
+            if descending:
+                start = off + (n - 1 - i) * block
+            else:
+                start = off + i * block
+            cnt = min(block, off + length - start)
+            out.append((start, cnt))
+        return out
+
+    def _build_plan(self):
+        p = []
+        p.append(("emit", fwupd_nr.build_frame(0x01)))
+        p.append(("expect_start_res", 10000))
+        p.append(("emit", fwupd_nr.build_frame(0x01, engines._u32le(10000))))
+        p.append(("expect_repeat", 10000))
+        regions = self.m["expected_regions"]
+        flash = self.m["flash_phase"]
+        for r in regions:
+            if r["name"] == "nr_image":
+                continue
+            for (off, cnt) in self._reads_for(r["offset"], r["length"]):
+                p.append(("emit", fwupd_nr.build_frame(0x02, engines._u32le(off) + engines._u32le(cnt))))
+                p.append(("expect_read", off, cnt))
+        p.append(("emit", fwupd_nr.build_frame(0x01)))
+        p.append(("expect_start_res", 115200))
+        p.append(("emit", fwupd_nr.build_frame(0x01)))
+        p.append(("expect_start_res", 115200))
+        p.append(("emit", fwupd_nr.build_frame(0x04, engines._u32le(flash["length"]))))
+        p.append(("expect_len_reply",))
+        blocks = self._reads_for(flash["offset"], flash["length"], block=512, descending=True)
+        for (off, cnt) in blocks:
+            p.append(("emit", fwupd_nr.build_frame(0x02, engines._u32le(off) + engines._u32le(cnt))))
+            p.append(("expect_read", off, cnt))
+        rep_off, rep_cnt = blocks[0]
+        p.append(("emit", fwupd_nr.build_frame(0x02, engines._u32le(rep_off) + engines._u32le(rep_cnt))))
+        p.append(("expect_read", rep_off, rep_cnt))
+        p.append(("emit", fwupd_nr.build_frame(0x02, engines._u32le(rep_off) + engines._u32le(32))))
+        p.append(("expect_read", rep_off, 32))
+        if self.zero_read:
+            p.append(("emit", fwupd_nr.build_frame(0x02, engines._u32le(rep_off) + engines._u32le(0))))
+            p.append(("expect_read", rep_off, 0))
+        p.append(("emit", fwupd_nr.build_frame(0x03, b"\x00")))
+        p.append(("done",))
+        return p
+
+    def _mark(self, off, cnt):
+        for i in range(off, off + cnt):
+            if not self.served[i]:
+                self.served[i] = 1
+                self.served_bytes += 1
+
+    def on_open(self, ser):
+        pass
+
+    def on_poll(self, ser):
+        if self.cursor >= len(self.plan):
+            return
+        step = self.plan[self.cursor]
+        if step[0] == "emit":
+            ser.feed(step[1])
+            self.cursor += 1
+        elif step[0] == "done":
+            self.stopped = True
+
+    def on_host_bytes(self, ser, data):
+        self.buf += data
+        while True:
+            fr = self._take_frame()
+            if fr is None:
+                return
+            self._consume_host_frame(ser, fr)
+
+    def _take_frame(self):
+        while len(self.buf) >= 2 and not (self.buf[0] == 0xAA and self.buf[1] == 0x55):
+            del self.buf[:1]
+        if len(self.buf) < 6:
+            return None
+        length = self.buf[2] | (self.buf[3] << 8)
+        total = 6 + length
+        if len(self.buf) < total:
+            return None
+        fr = bytes(self.buf[:total])
+        del self.buf[:total]
+        stored = fr[total - 2] | (fr[total - 1] << 8)
+        if fwupd_nr.crc16_xmodem(fr[:total - 2]) != stored:
+            self.errors.append("host frame CRC bad: " + fr.hex())
+        return fr
+
+    def _consume_host_frame(self, ser, fr):
+        if self.cursor >= len(self.plan):
+            return
+        step = self.plan[self.cursor]
+        op = fr[4]
+        payload = fr[5:len(fr) - 2]
+        tag = step[0]
+        if tag == "expect_start_res":
+            if op != 0x01 or len(payload) != 4:
+                self.errors.append("expected START_RES, got " + fr.hex())
+            else:
+                self.baud_offers.append(engines._read_u32le(payload, 0))
+            self.cursor += 1
+        elif tag == "expect_repeat":
+            if op != 0x01 or len(payload) != 4:
+                self.errors.append("expected repeat START_RES, got " + fr.hex())
+            self.cursor += 1
+        elif tag == "expect_read":
+            _, off, cnt = step
+            if op != 0x02:
+                self.errors.append("expected READ response, got op " + hex(op))
+            else:
+                got = payload[8:]
+                if got != self.ufw[off:off + cnt]:
+                    self.bad_slice = True
+                    self.errors.append("bad slice @ " + hex(off))
+                self._mark(off, cnt)
+            self.cursor += 1
+        elif tag == "expect_len_reply":
+            self.len_notify_reply = fr
+            self.cursor += 1
+        else:
+            pass
+
+
+def _make_ufw() -> bytes:
+    size = 0x3800
+    buf = bytearray(size)
+    s = 7
+    for i in range(size):
+        s = (s * 1103515245 + 12345) & 0x7FFFFFFF
+        buf[i] = (s >> 16) % 255
+    def rec(crc, off, length, flags, idx, name):
+        r = bytearray(32)
+        struct.pack_into("<IIIHH", r, 0, crc, off, length, flags, idx)
+        nm = name.encode("ascii")
+        r[16:16 + len(nm)] = nm
+        return bytes(r)
+    buf[0x7C0:0x7E0] = rec(0x11223344, 0x40, 0x100, 1, 0, "a.bin")
+    buf[0x7E0:0x800] = rec(0x55667788, 0x840, 0x200, 1, 1, "uart_user.bin")
+    hdr = bytearray(32)
+    hdr[0:4] = bytes([1, 2, 3, 4])
+    hdr[4:8] = b"0.01"
+    hdr[16:22] = b"QX700N"
+    for i in range(22, 32):
+        hdr[i] = 0xFF
+    buf[0x1400:0x1420] = hdr
+    buf[0x1700:0x1720] = hdr
+    tr = bytearray(28)
+    struct.pack_into("<I", tr, 0, 0x42733665)
+    tr[12:17] = b"JLUFW"
+    buf[size - 28:size] = tr
+    return bytes(buf)
+
+
+class Cap:
+    def __init__(self):
+        self.logs = []
+        self.progress = []
+
+    def on_log(self, msg, cls="info"):
+        self.logs.append((cls, msg))
+
+    def on_progress(self, done, total, phase):
+        self.progress.append((done, total, phase))
+
+    @property
+    def last_progress(self):
+        return self.progress[-1] if self.progress else None
+
+
+FAILS = []
+PASSES = []
+
+
+def check(name, fn):
+    try:
+        fn()
+        PASSES.append(name)
+        print("  ok  " + name)
+    except Exception as e:
+        FAILS.append((name, repr(e)))
+        print("FAIL  " + name + "  ->  " + repr(e))
+    finally:
+        _restore()
+
+
+def expect_raises(fn, needle):
+    try:
+        fn()
+    except Exception as e:
+        msg = str(e)
+        assert needle in msg, "expected %r in error, got: %s" % (needle, msg)
+        return e
+    raise AssertionError("expected an error containing %r, none raised" % needle)
+
+
+FW_ARTIFACT = bytes.fromhex(
+    "0100c000080894a8afc4113c189306c7119f4b5fcb63129342bf855f6f93dbc98cf7ecb3c8e610060120c0000859a"
+    "c74c504b2ba42718fd23f5229c38f3e63f39bf44439c193d902a0c79488454d11060140c000083763b76b4a2e2edc"
+    "08158ba21f82798162750d8d462201b5ab38e62381f9be49270e06")
+FW_MANIFEST = {
+    "kind": "fw", "frames": 3, "payload_bytes": 96, "wire_bytes": 120,
+    "sha256": "6ce0377ef4fae0282cea197c3542e52fe068f5564b105958e361c12ab210824a",
+    "addr_first": 134266880, "addr_last": 134266944,
+    "frame_len": 40, "block_size": 32, "base_addr": 134266880, "pad_byte": 0,
+    "handshake_ascii": "UPDATE", "handshake_expect_hex": "06",
+    "codeplug_collision_hex": None, "ident_query_hex": "02",
+    "ident_reply_prefix_ascii": "ID890UV",
+    "finish_byte_hex": "18", "finish_acked": False,
+    "serial": {"baud": 921600, "control_line_state": "RTS only (0x0002)"},
+}
+ICON_ARTIFACT = bytes.fromhex(
+    "01000004008f7a27a452418d469d92fa8d0d538c20d845fec19eeb4c55c8f05611db25e1020810060120000400e694"
+    "d50ad453fd03cef0cfc1843ee5076ed73eb8750f5f539434727f49628c3b3c10060140000400fdb49c7dbc1a38464c"
+    "30d4f696cf0f826c3711af0802cc8cecd403527aedd7c77d100601001004004a816f77cd174dbb9fc2f0e78c81f731"
+    "d37eaa06089bc3752d7ae9ec675791cd92110601201004005c8ec1bd2875881ff087839e8e7a4c434338b8e683ddad"
+    "0e49b886fa665e4202cc0f06")
+ICON_MANIFEST = {
+    "kind": "icon", "frames": 5, "payload_bytes": 160, "wire_bytes": 200,
+    "sha256": "5a3790bfdaf347e0d8b62e1733f63b9712f52f0651a333d3cfb59ed285680f20",
+    "addr_first": 262144, "addr_last": 266272,
+    "frame_len": 40, "block_size": 32, "base_addr": 262144, "pad_byte": 0,
+    "handshake_ascii": "PROGRAM", "handshake_expect_hex": "06",
+    "codeplug_collision_hex": "515806", "ident_query_hex": None,
+    "ident_reply_prefix_ascii": None,
+    "finish_byte_hex": "18", "finish_acked": True,
+    "serial": {"baud": 921600, "control_line_state": "RTS only (0x0002)"},
+}
+IDENT_D890 = "494438393055560000563130300000" + "06"
+IDENT_D878 = "494438373855560000563130300000" + "06"
+IDENT_D878UV2 = "494438373855563200563130300000" + "06"
+IDENT_IABORD = "49412d424f52440000563230300000" + "06"
+
+
+def _synth_cps_pkg(base, payload):
+    import struct
+    name = b"synth.bin".ljust(0x100, b"\x00")
+    cdi = name + struct.pack("<IIII", base, len(payload), 0, 0x10000) + b"\x00" * 6
+    spi = struct.pack("<IHI", 32, 1, len(payload))
+    return payload, cdi, spi
+
+SCT_ARTIFACT = bytes.fromhex("".join([
+    "84a96100040016002f3d",
+    "84a9610002001601",
+    "84a96100040093032fbb",
+    "84a9610017039400010010d0a419c839c211346e6e91e7fb0d78bf2f8200",
+    "84a9610017039400011010d80997bcc5f261e1787944e2691426942f8b00",
+    "84a961001703940001201060ee163252a3328f8284775fd71bd3e72fae00",
+    "84a961001703940001301069539326df5382bd8c902a5a4522013c2f8400",
+    "84a96100040016012f3c",
+    "84a96100040093002fb8",
+    "84a96100040016002f3d",
+]))
+SCT_MANIFEST = {
+    "kind": "sct3288_baseband", "frames": 4, "control_frames": 6, "payload_bytes": 64, "wire_bytes": 178,
+    "sha256": "fd0b664dfa63465620b685e0608ab608bc6f0ccf7fb15d99692758339fed1231",
+    "addr_first": 256, "addr_last": 304, "addr_end": 320, "banks": [0],
+    "segments": [{"region": 3, "first_frame": 0, "frames": 4, "addr_start": 256, "addr_end": 320}],
+    "session": {
+        "parity_disable": "84a96100040016002f3d", "parity_disable_ack": "84a9610002001706",
+        "parity_enable": "84a9610002001601", "parity_enable_ack": "84a9610002001600",
+        "flash_initial": "84a96100040093032fbb", "flash_initial_region": 3,
+        "flash_initial_ack": "84a96100040093002fb8",
+        "flash_end": "84a96100040093002fb8", "flash_end_ack": "84a96100040093002fb8",
+        "write_ack": "84a96100040394002fbc"},
+    "controls": [
+        {"before_frame": 0, "frames": ["84a96100040016002f3d", "84a9610002001601"],
+         "acks": ["84a9610002001706", "84a9610002001600"]},
+        {"before_frame": 0, "frames": ["84a96100040093032fbb"], "acks": ["84a96100040093002fb8"]},
+        {"before_frame": 4, "frames": ["84a96100040016012f3c", "84a96100040093002fb8", "84a96100040016002f3d"],
+         "acks": ["84a96100040016002f3d", "84a96100040093002fb8", "84a96100040016002f3d"]}],
+    "frame_index": [
+        [0, 10, "parity_disable"], [10, 8, "parity_enable"], [18, 10, "flash_initial"],
+        [28, 30, "write"], [58, 30, "write"], [88, 30, "write"], [118, 30, "write"],
+        [148, 10, "seg_parity"], [158, 10, "flash_end"], [168, 10, "parity_restore"]],
+}
+SCT_NAK_FRAME = bytes.fromhex("84a96100040017032f3f")
+SCT_ACK_PARITY_ON = bytes.fromhex("84a96100040016002f3d")
+
+
+def run_all():
+    def t_crc():
+        assert fwupd_nr.crc16_xmodem(bytes.fromhex("aa55010006")) == 0xF242
+        assert fwupd_nr.build_frame(0x06).hex() == "aa5501000642f2"
+        assert fwupd_nr.build_frame(0x01).hex() == "aa55010001a582"
+        assert fwupd_nr.build_frame(0x01, engines._u32le(10000)).hex() == "aa55050001102700000bbf"
+        assert fwupd_nr.build_frame(0x01, engines._u32le(115200)).hex() == "aa5505000100c201005cdc"
+        assert engines.NR_LEN_NOTIFY_REPLY.hex() == "aa55010003e7a2"
+        assert fwupd_nr.build_frame(0x03, b"\x00").hex() == "aa550200030074e9"
+        assert fwupd_nr.build_frame(0x02, engines._u32le(0) + engines._u32le(512)).hex() \
+            == "aa550900020000000000020000252f"
+        assert engines.NR_BAUD_LADDER == {9600: 10000, 10000: 115200, 115200: 115200}
+    check("nr crc + frame vectors", t_crc)
+
+    def t_kind_gate():
+        expect_raises(lambda: engines.validate_cps_package("fw", ICON_ARTIFACT, ICON_MANIFEST),
+                      'manifest says kind "icon"')
+    check("cps kind gate", t_kind_gate)
+
+    def t_addr_gate():
+        doctored = {**FW_MANIFEST, "frames": 5}
+        expect_raises(lambda: engines.validate_cps_package("fw", ICON_ARTIFACT, doctored),
+                      "addresses 0x40000")
+    check("cps address gate (icon bytes under fw manifest)", t_addr_gate)
+
+    def t_sha_gate():
+        bad = bytearray(FW_ARTIFACT)
+        bad[10] ^= 0x01
+        cap = Cap()
+        dev = CpsDevice("fw", ident_hex=IDENT_D890)
+        _install(None, dev)
+        expect_raises(lambda: engines.run("fw", "COM_FAKE", bytes(bad), FW_MANIFEST,
+                                          on_log=cap.on_log, on_progress=cap.on_progress),
+                      "does not match the manifest")
+        assert dev.port.opens == [], "port must not open on a sha mismatch"
+    check("cps sha256 gate before open", t_sha_gate)
+
+    def t_fw_happy():
+        cap = Cap()
+        dev = CpsDevice("fw", ident_hex=IDENT_D890)
+        fake = _install(None, dev)
+        engines.run("fw", "COM_FAKE", FW_ARTIFACT, FW_MANIFEST,
+                    on_log=cap.on_log, on_progress=cap.on_progress)
+        assert len(dev.frames) == 3, dev.frames
+        assert b"".join(dev.frames) == FW_ARTIFACT, "frames must be the artifact bytes VERBATIM"
+        assert not dev.bad_checksum
+        assert dev.finish_byte == 0x18
+        assert fake.tx.endswith(b"\x18"), "finish byte must be the last write"
+        assert fake.signals[0] == (False, True), "fw = RTS only (DTR false)"
+        assert fake.opens == [921600]
+        assert cap.last_progress == (3, 3, "done")
+        assert fake.closes == 1
+    check("fw happy path", t_fw_happy)
+
+    def t_fw_wrong_radio():
+        cap = Cap()
+        dev = CpsDevice("fw", ident_hex=IDENT_D878)
+        fake = _install(None, dev)
+        expect_raises(lambda: engines.run("fw", "COM_FAKE", FW_ARTIFACT, FW_MANIFEST,
+                                          on_log=cap.on_log, on_progress=cap.on_progress),
+                      "WRONG RADIO")
+        assert len(dev.frames) == 0, "no frames before the identity gate"
+    check("fw wrong-radio abort", t_fw_wrong_radio)
+
+    def t_fw_nak():
+        cap = Cap()
+        dev = CpsDevice("fw", ident_hex=IDENT_D890, nak_frame=1)
+        fake = _install(None, dev)
+        e = expect_raises(lambda: engines.run("fw", "COM_FAKE", FW_ARTIFACT, FW_MANIFEST,
+                                              on_log=cap.on_log, on_progress=cap.on_progress),
+                          "answered 15 instead of 06")
+        assert "Stopping before the next frame" in str(e)
+        assert len(dev.frames) == 2, "delivered frame 1 exactly once, no resend"
+    check("fw NAK stops, no resend", t_fw_nak)
+
+    def t_fw_silent():
+        saved = engines.CPS_ACK_TIMEOUT_MS
+        engines.CPS_ACK_TIMEOUT_MS = 150
+        try:
+            cap = Cap()
+            dev = CpsDevice("fw", ident_hex=IDENT_D890, drop_ack_at=1)
+            fake = _install(None, dev)
+            e = expect_raises(lambda: engines.run("fw", "COM_FAKE", FW_ARTIFACT, FW_MANIFEST,
+                                                  on_log=cap.on_log, on_progress=cap.on_progress),
+                              "no ACK for frame 1")
+            assert "NOT resending" in str(e)
+            assert len(dev.frames) == 2, "frame 1 delivered exactly once"
+        finally:
+            engines.CPS_ACK_TIMEOUT_MS = saved
+    check("fw silent radio: no-ACK, no resend", t_fw_silent)
+
+    def t_icon_happy():
+        cap = Cap()
+        dev = CpsDevice("icon")
+        fake = _install(None, dev)
+        engines.run("icon", "COM_FAKE", ICON_ARTIFACT, ICON_MANIFEST,
+                    on_log=cap.on_log, on_progress=cap.on_progress)
+        assert len(dev.frames) == 5
+        assert b"".join(dev.frames) == ICON_ARTIFACT
+        assert dev.finish_byte == 0x18
+        assert fake.signals[0] == (False, True)
+        assert cap.last_progress == (5, 5, "done")
+    check("icon happy path (finish acked)", t_icon_happy)
+
+    def t_icon_codeplug():
+        cap = Cap()
+        dev = CpsDevice("icon", codeplug_mode=True)
+        fake = _install(None, dev)
+        e = expect_raises(lambda: engines.run("icon", "COM_FAKE", ICON_ARTIFACT, ICON_MANIFEST,
+                                              on_log=cap.on_log, on_progress=cap.on_progress),
+                          "CODEPLUG")
+        assert "515806" in str(e)
+        assert len(dev.frames) == 0, "no frames into a codeplug session"
+    check("icon codeplug-mode abort", t_icon_codeplug)
+
+    def t_878_manifests():
+        from radio_fw.vendor import fwupd_cps
+        cases = {
+            "fw":   (0x08004000, "UPDATE",  "ID878UV2", None),
+            "icon": (0x00020000, "PROGRAM", None,       "515806"),
+            "aprs": (0x00002000, "UPDATE",  "IA-BORD",  None),
+        }
+        for kind, (base, hs, ident, collide) in cases.items():
+            cdd, cdi, spi = _synth_cps_pkg(base, bytes(range(64)))
+            _art, m = fwupd_cps.compile_update(kind, cdd, cdi, spi, model="d878uv2")
+            assert m["kind"] == kind and m["model"] == "d878uv2"
+            assert m["base_addr"] == base, (kind, hex(m["base_addr"]))
+            assert m["handshake_ascii"] == hs, (kind, m["handshake_ascii"])
+            assert m["ident_reply_prefix_ascii"] == ident, (kind, m["ident_reply_prefix_ascii"])
+            assert m["ident_query_hex"] == ("02" if ident else None)
+            assert m["codeplug_collision_hex"] == collide, (kind, m["codeplug_collision_hex"])
+        cdd, cdi, spi = _synth_cps_pkg(0x0800C000, bytes(range(64)))
+        expect_raises(lambda: fwupd_cps.compile_update("fw", cdd, cdi, spi, model="d878uv2"),
+                      "0x08004000")
+    check("878 fwupd_cps model params + address gate", t_878_manifests)
+
+    def t_aprs_engine():
+        from radio_fw.vendor import fwupd_cps
+        cdd, cdi, spi = _synth_cps_pkg(0x2000, bytes((i * 7) & 0xFF for i in range(96)))
+        artifact, manifest = fwupd_cps.compile_update("aprs", cdd, cdi, spi, model="d878uv2")
+        cap = Cap()
+        dev = CpsDevice("aprs", ident_hex=IDENT_IABORD)
+        fake = _install(None, dev)
+        engines.run("aprs", "COM_FAKE", artifact, manifest,
+                    on_log=cap.on_log, on_progress=cap.on_progress)
+        assert b"".join(dev.frames) == artifact, "aprs frames must be the artifact verbatim"
+        assert not dev.bad_checksum
+        assert dev.finish_byte == 0x18
+        assert fake.signals[0] == (False, True), "CPS = RTS only"
+        assert cap.last_progress[2] == "done"
+    check("aprs engine happy path (UPDATE + IA-BORD gate)", t_aprs_engine)
+
+    def t_aprs_wrong_radio():
+        from radio_fw.vendor import fwupd_cps
+        cdd, cdi, spi = _synth_cps_pkg(0x2000, bytes(range(64)))
+        artifact, manifest = fwupd_cps.compile_update("aprs", cdd, cdi, spi, model="d878uv2")
+        dev = CpsDevice("aprs", ident_hex=IDENT_D890)
+        _install(None, dev)
+        expect_raises(lambda: engines.run("aprs", "COM_FAKE", artifact, manifest,
+                                          on_log=lambda *a: None, on_progress=lambda *a: None),
+                      "WRONG RADIO")
+        assert len(dev.frames) == 0
+    check("aprs wrong-radio abort (ident gate)", t_aprs_wrong_radio)
+
+    def t_sct_happy():
+        cap = Cap()
+        dev = SctDevice(SCT_MANIFEST)
+        fake = _install(None, dev)
+        engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                    on_log=cap.on_log, on_progress=cap.on_progress)
+        assert bytes(fake.tx) == SCT_ARTIFACT, "whole OUT stream must equal the artifact, in order"
+        assert cap.last_progress == (10, 10, "done")
+        assert fake.closes == 1
+        assert fake.signals[0] == (True, True), "SCT: DTR+RTS (see _run_sct)"
+        assert fake.stopbits == engines.serial.STOPBITS_ONE
+    check("sct happy path", t_sct_happy)
+
+    def t_sct_wrong_ack():
+        cap = Cap()
+        dev = SctDevice(SCT_MANIFEST, wrong_ack_at=4)
+        fake = _install(None, dev)
+        e = expect_raises(lambda: engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                                              on_log=cap.on_log, on_progress=cap.on_progress),
+                          "NOT retrying")
+        assert "frame 4 (write)" in str(e), str(e)
+    check("sct wrong-ACK stops", t_sct_wrong_ack)
+
+    def t_sct_plan_gate():
+        bad = {**SCT_MANIFEST, "frame_index": SCT_MANIFEST["frame_index"][:-1]}
+        expect_raises(lambda: engines.plan_sct(SCT_ARTIFACT, bad), "covers 168 of 178")
+    check("sct plan tiling gate", t_sct_plan_gate)
+
+    def t_sct_default_baud():
+        dev = SctDevice(SCT_MANIFEST)
+        fake = _install(None, dev)
+        engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                    on_log=lambda *a: None, on_progress=lambda *a: None)
+        assert fake.opens == [38400], fake.opens
+    check("sct opens at the vendor-documented 38400", t_sct_default_baud)
+
+    def t_sct_first_ack_parity_on():
+        cap = Cap()
+        dev = SctDevice(SCT_MANIFEST, first_ack=SCT_ACK_PARITY_ON)
+        fake = _install(None, dev)
+        engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                    on_log=cap.on_log, on_progress=cap.on_progress)
+        assert bytes(fake.tx) == SCT_ARTIFACT, "the stream must still be the artifact, in order"
+        assert cap.last_progress == (10, 10, "done")
+    check("sct accepts the parity-ON reply to frame 0 (retry path)", t_sct_first_ack_parity_on)
+
+    def t_sct_parity_on_ack_is_frame_0_only():
+        class OneOffDevice(SctDevice):
+            def on_host_bytes(self, ser, data):
+                if self.idx == 3:
+                    self.buf += data
+                    if self._take_frame() is not None:
+                        self.idx += 1
+                        ser.feed(SCT_ACK_PARITY_ON)
+                    return
+                super().on_host_bytes(ser, data)
+        _install(None, OneOffDevice(SCT_MANIFEST))
+        e = expect_raises(lambda: engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                                              on_log=lambda *a: None, on_progress=lambda *a: None),
+                          "frame 3 (write)")
+        assert "erase is already committed" in str(e), str(e)
+    check("sct parity-ON ack is accepted at frame 0 ONLY", t_sct_parity_on_ack_is_frame_0_only)
+
+    def t_sct_first_frame_silence_blames_baud():
+        saved = engines.SCT_ACK_TIMEOUT_MS
+        engines.SCT_ACK_TIMEOUT_MS = 60
+        try:
+            dev = SctDevice(SCT_MANIFEST, silent_at=0)
+            _install(None, dev)
+            e = expect_raises(lambda: engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                                                  on_log=lambda *a: None, on_progress=lambda *a: None),
+                              "this run used 38400")
+            assert "try 115200" in str(e), str(e)
+        finally:
+            engines.SCT_ACK_TIMEOUT_MS = saved
+    check("sct frame-0 SILENCE blames the baud", t_sct_first_frame_silence_blames_baud)
+
+    def t_sct_first_frame_wrong_reply_does_not_blame_baud():
+        dev = SctDevice(SCT_MANIFEST, first_ack=bytes.fromhex("84a9610002009900"))
+        _install(None, dev)
+        e = expect_raises(lambda: engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                                              on_log=lambda *a: None, on_progress=lambda *a: None),
+                          "frame 0 (parity_disable)")
+        assert "baud" not in str(e), "a WRONG reply is not a baud problem: " + str(e)
+        assert "No erase has been issued" in str(e), str(e)
+    check("sct frame-0 wrong reply does not blame the baud", t_sct_first_frame_wrong_reply_does_not_blame_baud)
+
+    def t_sct_redo_request_resent_once():
+        cap = Cap()
+        dev = SctDevice(SCT_MANIFEST, nak_at=4)
+        fake = _install(None, dev)
+        engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                    on_log=cap.on_log, on_progress=cap.on_progress)
+        again = SCT_ARTIFACT[58:88]
+        assert bytes(fake.tx).count(again) == 2, "the NAKed frame must go out exactly twice"
+        assert len(fake.tx) == len(SCT_ARTIFACT) + len(again)
+        assert cap.last_progress == (10, 10, "done")
+    check("sct resends once on a 17 03 redo request", t_sct_redo_request_resent_once)
+
+    def t_sct_redo_is_bounded_to_one():
+        class AlwaysNak(SctDevice):
+            def on_host_bytes(self, ser, data):
+                if self.idx == 3:
+                    self.buf += data
+                    while True:
+                        fr = self._take_frame()
+                        if fr is None:
+                            return
+                        if fr == SCT_ARTIFACT[28:58]:
+                            self.naks = getattr(self, "naks", 0) + 1
+                        ser.feed(SCT_NAK_FRAME)
+                super().on_host_bytes(ser, data)
+        dev = AlwaysNak(SCT_MANIFEST)
+        fake = _install(None, dev)
+        e = expect_raises(lambda: engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                                              on_log=lambda *a: None, on_progress=lambda *a: None),
+                          "frame 3 (write)")
+        assert dev.naks == 2, "exactly one resend: %r NAKs" % dev.naks
+        assert bytes(fake.tx).count(SCT_ARTIFACT[28:58]) == 2
+        assert "erase is already committed" in str(e), str(e)
+    check("sct redo is bounded to a single resend", t_sct_redo_is_bounded_to_one)
+
+    def t_sct_redo_not_honoured_for_control_frames():
+        dev = SctDevice(SCT_MANIFEST, nak_at=1)
+        _install(None, dev)
+        e = expect_raises(lambda: engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                                              on_log=lambda *a: None, on_progress=lambda *a: None),
+                          "frame 1 (parity_enable)")
+        assert "No erase has been issued" in str(e), str(e)
+    check("sct does not resend control frames on a NAK", t_sct_redo_not_honoured_for_control_frames)
+
+    def t_sct_trailing_parity_restore_is_lenient():
+        cap = Cap()
+        dev = SctDevice(SCT_MANIFEST, wrong_ack_at=9)
+        fake = _install(None, dev)
+        engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                    on_log=cap.on_log, on_progress=cap.on_progress)
+        assert bytes(fake.tx) == SCT_ARTIFACT
+        assert cap.last_progress == (10, 10, "done")
+        assert any("flash itself is complete" in m for _, m in cap.logs), cap.logs[-3:]
+    check("sct completed flash survives a bad closing parity ACK", t_sct_trailing_parity_restore_is_lenient)
+
+    def t_sct_parity_restored_on_failure():
+        dev = SctDevice(SCT_MANIFEST, wrong_ack_at=4)
+        fake = _install(None, dev)
+        expect_raises(lambda: engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                                          on_log=lambda *a: None, on_progress=lambda *a: None),
+                      "re-flashed from the start")
+        restore = SCT_ARTIFACT[168:178]
+        assert bytes(fake.tx).endswith(restore), "the DSP's parity must be restored on the way out"
+    check("sct restores parity on the failure path", t_sct_parity_restored_on_failure)
+
+    def t_sct_parity_restored_on_abort():
+        dev = SctDevice(SCT_MANIFEST)
+        fake = _install(None, dev)
+        ev = threading.Event()
+        orig = engines.SerialLink.send
+
+        def send_then_abort(self, data):
+            orig(self, data)
+            if len(fake.tx) >= 58:
+                ev.set()
+        engines.SerialLink.send = send_then_abort
+        try:
+            expect_raises(lambda: engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                                              on_log=lambda *a: None, on_progress=lambda *a: None,
+                                              abort=ev),
+                          "aborted by the operator")
+        finally:
+            engines.SerialLink.send = orig
+        assert bytes(fake.tx).endswith(SCT_ARTIFACT[168:178]), \
+            "the parity restore must still go out on an abort: " + fake.tx[-20:].hex()
+    check("sct restores parity even on an operator abort", t_sct_parity_restored_on_abort)
+
+    def t_sct_erase_failure_admits_the_erase():
+        dev = SctDevice(SCT_MANIFEST, wrong_ack_at=2)
+        fake = _install(None, dev)
+        e = expect_raises(lambda: engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                                              on_log=lambda *a: None, on_progress=lambda *a: None),
+                          "frame 2 (flash_initial)")
+        assert "erase is already committed" in str(e), str(e)
+        assert "nothing on the baseband has been changed" not in str(e), str(e)
+        assert SCT_ARTIFACT[18:28] in bytes(fake.tx), "the erase frame really did go out"
+    check("sct failed erase does not claim the baseband is untouched", t_sct_erase_failure_admits_the_erase)
+
+    def t_sct_trailing_parity_silence_is_lenient():
+        saved = engines.SCT_ACK_TIMEOUT_MS
+        engines.SCT_ACK_TIMEOUT_MS = 60
+        try:
+            cap = Cap()
+            dev = SctDevice(SCT_MANIFEST, silent_at=9)
+            fake = _install(None, dev)
+            engines.run("sct", "COM_FAKE", SCT_ARTIFACT, SCT_MANIFEST,
+                        on_log=cap.on_log, on_progress=cap.on_progress)
+            assert bytes(fake.tx) == SCT_ARTIFACT
+            assert cap.last_progress == (10, 10, "done")
+        finally:
+            engines.SCT_ACK_TIMEOUT_MS = saved
+    check("sct completed flash survives SILENCE on the closing frame", t_sct_trailing_parity_silence_is_lenient)
+
+    def t_sct_device_double_pads_to_even():
+        dev = SctDevice(SCT_MANIFEST)
+        odd_payload = fwupd_sct.write_frame(fwupd_sct.HexRecord(0, 0x0100, bytes(3)))
+        assert len(odd_payload) == 16 and odd_payload[5] == 0x03, "MOD 03, unpadded"
+        dev.buf += odd_payload + b"\xff"
+        got = dev._take_frame()
+        assert got == odd_payload, got.hex()
+        assert bytes(dev.buf) == b"\xff", dev.buf.hex()
+    check("sct device double frames by pad-to-even", t_sct_device_double_pads_to_even)
+
+    def t_sct_region_formula_matches_capture():
+        for addr, want in fwupd_sct.CAPTURE_PROVEN_REGIONS.items():
+            got = fwupd_sct.REGION_TABLE[addr]
+            assert got == want, "%#08x: table %#04x != capture %#04x" % (addr, got, want)
+            derived = fwupd_sct.region_byte(fwupd_sct.SEGMENT_ERASE_TYPE[addr])
+            assert derived == want, "%#08x: formula %#04x != capture %#04x" % (addr, derived, want)
+        assert fwupd_sct.REGION_TABLE[0x039000] == 0x05
+        assert fwupd_sct.REGION_TABLE[0x040000] == 0x0D
+        assert 0x05C000 not in fwupd_sct.REGION_TABLE
+        assert all(v & 1 for v in fwupd_sct.REGION_TABLE.values())
+    check("sct region byte = (InitFlashTypeEnum << 1) | 1", t_sct_region_formula_matches_capture)
+
+    def t_sct_pad_to_even():
+        r3 = fwupd_sct.HexRecord(0, 0x0100, bytes(3))
+        r4 = fwupd_sct.HexRecord(0, 0x0100, bytes(4))
+        f3, f4 = fwupd_sct.write_frame(r3), fwupd_sct.write_frame(r4)
+        assert len(f3) == 16 and len(f4) == 18, (len(f3), len(f4))
+        assert f4[-1] == 0x00
+        assert ((f4[3] << 8) | f4[4]) == 11, "LEN must not count the pad"
+        assert ((f3[3] << 8) | f3[4]) == 10
+        assert len(fwupd_sct.parity_disable_frame()) == 10
+        assert len(fwupd_sct.parity_enable_frame()) == 8
+        assert len(fwupd_sct.flash_initial_frame(0x03)) == 10
+    check("sct pads any odd-length frame, not every write frame", t_sct_pad_to_even)
+
+    def t_sct_region_base_without_discontinuity_refused():
+        recs = []
+        addr = 0x035000
+        while addr < 0x039000:
+            recs.append(fwupd_sct.HexRecord(addr >> 16, addr & 0xFFFF, bytes(0x100)))
+            addr += 0x100
+        recs.append(fwupd_sct.HexRecord(0x039000 >> 16, 0x039000 & 0xFFFF, bytes(16)))
+        expect_raises(lambda: fwupd_sct.compile_stream(recs), "erase-region base")
+    check("sct refuses a region base reached contiguously", t_sct_region_base_without_discontinuity_refused)
+
+    def t_nr_happy():
+        ufw = _make_ufw()
+        manifest = fwupd_nr.build_manifest(ufw)
+        cap = Cap()
+        dev = NrDevice(ufw, manifest)
+        fake = _install(None, dev)
+        engines.run("nr", "COM_FAKE", ufw, manifest,
+                    on_log=cap.on_log, on_progress=cap.on_progress)
+        assert not dev.errors, dev.errors
+        assert not dev.bad_slice
+        assert dev.len_notify_reply is not None and dev.len_notify_reply.hex() == "aa55010003e7a2"
+        assert dev.baud_offers == [10000, 115200, 115200], dev.baud_offers
+        assert fake.signals[0] == (True, True), "NR = DTR+RTS"
+        assert fake.opens == [9600], fake.opens
+        assert fake.baud_changes == [10000, 115200], fake.baud_changes
+        assert cap.last_progress[2] == "done"
+        assert cap.last_progress[0] == manifest["payload_bytes"], (cap.last_progress, manifest["payload_bytes"])
+    check("nr device-pull happy path", t_nr_happy)
+
+    def t_nr_zero_length_read():
+        ufw = _make_ufw()
+        manifest = fwupd_nr.build_manifest(ufw)
+        cap = Cap()
+        dev = NrDevice(ufw, manifest, zero_read=True)
+        _install(None, dev)
+        engines.run("nr", "COM_FAKE", ufw, manifest,
+                    on_log=cap.on_log, on_progress=cap.on_progress)
+        assert not dev.errors, dev.errors
+        assert cap.last_progress[2] == "done"
+    check("nr serves a zero-length read request", t_nr_zero_length_read)
+
+    def t_nr_bad_crc_is_dropped_not_fatal():
+        fake = _install(None, None)
+        logs = []
+        link = engines.SerialLink("COM_FAKE", on_log=lambda m, c="info": logs.append((c, m)))
+        link.open(9600, dtr=True, rts=True)
+        good = fwupd_nr.build_frame(0x01)
+        bad = bytearray(good)
+        bad[-1] ^= 0xFF
+        fake.feed(bytes(bad) + good)
+        f = engines._nr_read_frame(link, 2000)
+        assert f["opcode"] == 0x01 and f["raw"] == good
+        assert any("CRC mismatch" in m for _, m in logs), logs
+        fake.feed(bytes(bad) * (engines.NR_MAX_BAD_CRC + 1))
+        expect_raises(lambda: engines._nr_read_frame(link, 2000),
+                      "in a row were unusable")
+        link.close()
+    check("nr drops a corrupt frame instead of ending the session", t_nr_bad_crc_is_dropped_not_fatal)
+
+    def t_nr_enter_is_retried():
+        saved = engines.NR_ENTER_RETRY_TIMEOUT_MS
+        engines.NR_ENTER_RETRY_TIMEOUT_MS = 40
+        try:
+            ufw = _make_ufw()
+            manifest = fwupd_nr.build_manifest(ufw)
+            fake = _install(None, None)
+            e = expect_raises(lambda: engines.run("nr", "COM_FAKE", ufw, manifest,
+                                                  on_log=lambda *a: None,
+                                                  on_progress=lambda *a: None),
+                              "did not answer REQ_ENTER_UPDATE_MODE")
+            assert "Nothing has been written" in str(e), str(e)
+            enter = fwupd_nr.build_frame(0x06)
+            assert engines.NR_ENTER_ATTEMPTS == 5
+            assert bytes(fake.tx) == enter * 5, fake.tx.hex()
+        finally:
+            engines.NR_ENTER_RETRY_TIMEOUT_MS = saved
+    check("nr retries the ENTER frame the board cannot re-request", t_nr_enter_is_retried)
+
+    def t_nr_size_gate():
+        ufw = _make_ufw()
+        manifest = fwupd_nr.build_manifest(ufw)
+        dev = NrDevice(ufw, manifest)
+        fake = _install(None, dev)
+        expect_raises(lambda: engines.run("nr", "COM_FAKE", ufw[:1024], manifest,
+                                          on_log=(lambda m, c="info": None),
+                                          on_progress=(lambda d, t, p: None)),
+                      "artifact/manifest mismatch")
+        assert fake.opens == [], "no open on a size mismatch"
+    check("nr size gate before open", t_nr_size_gate)
+
+    def t_usb_drop_wrap():
+        import serial as pyserial
+        fake = FakeSerial(None)
+        engines.serial.Serial = lambda *a, **k: fake
+        link = engines.SerialLink("COM_FAKE")
+        link.open(9600, dtr=True, rts=True)
+        fake.raise_on_read = pyserial.SerialException("[Errno 6] Device not configured")
+        e = expect_raises(lambda: link.read_exactly(1, 500), "dropped off the USB bus")
+        assert isinstance(e, engines.FirmwareUpdateError)
+        assert "serial read failed" in str(e), "CPS no-ACK path keys on this substring"
+    check("USB drop wraps as FirmwareUpdateError", t_usb_drop_wrap)
+
+    def t_finish_byte_falsy():
+        m = {**FW_MANIFEST, "finish_byte_hex": None}
+        dev = CpsDevice("fw", ident_hex=IDENT_D890)
+        _install(None, dev)
+        engines.run("fw", "COM_FAKE", FW_ARTIFACT, m,
+                    on_log=lambda *a: None, on_progress=lambda *a: None)
+        assert dev.finish_byte == 0x18, "a null finish_byte_hex must still send the 0x18 terminator"
+    check("falsy finish_byte_hex defaults to 0x18", t_finish_byte_falsy)
+
+    def t_abort():
+        cap = Cap()
+        abort = threading.Event()
+        def on_prog(done, total, phase):
+            cap.on_progress(done, total, phase)
+            if phase == "write":
+                abort.set()
+        dev = CpsDevice("fw", ident_hex=IDENT_D890)
+        fake = _install(None, dev)
+        e = expect_raises(lambda: engines.run("fw", "COM_FAKE", FW_ARTIFACT, FW_MANIFEST,
+                                              on_log=cap.on_log, on_progress=on_prog, abort=abort),
+                          "aborted by the operator")
+        assert not fake.tx.endswith(b"\x18"), "no finish byte after an abort"
+        assert fake.closes == 1
+    check("abort mid-write sends no finish byte", t_abort)
+
+
+if __name__ == "__main__":
+    run_all()
+    print("\n%d passed, %d failed" % (len(PASSES), len(FAILS)))
+    if FAILS:
+        for name, err in FAILS:
+            print("  FAIL " + name + ": " + err)
+        sys.exit(1)
+
+
+def test_all_engine_behaviors():
+    run_all()
+    assert not FAILS, "engine failures:\n" + "\n".join(n + ": " + e for n, e in FAILS)

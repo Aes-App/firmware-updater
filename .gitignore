@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtualenvs
+.venv/
+.venv-win*/
+.python-*/
+venv/
+
+# PyInstaller / build output
+build/
+dist/
+build-win-*/
+*.spec.bak
+bt_ota/assets/AesApp.iconset/
+
+# Native JieLi auth library — extracted from AnyTone's OTA APK for interop only,
+# not redistributed. Recreate it with:
+#   python -m bt_ota.extract_auth_lib "OTA V1.7.2.apk"
+bt_ota/libjl_ota_auth.so
+
+# Windows cross-build scaffolding (Parallels VM helpers, logs, retrieved exes)
+_win_*
+/mac-build-scratch/
+
+# macOS
+.DS_Store
+
+# Notarization / signing scratch
+*.zip
+!/**/vendor/**/*.zip
+
+# Working notes, not shipped code. The repo is mirrored publicly, so anything
+# here stays local: reverse-engineering write-ups, vendor-tool analysis and
+# agent instructions are not what the mirror is for.
+docs/
+CLAUDE.md

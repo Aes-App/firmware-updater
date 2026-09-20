@@ -1,0 +1,404 @@
+{
+ "dmr": {
+  "1": {
+   "anytone_878": {
+    "segments": 3,
+    "blocks": 8,
+    "sha256": "ce04ddf420a589aeabae83de8c5bd47d276bf6d9d8b0bdd8b541723d5df4985f",
+    "table": [
+     {
+      "addr": "04000000",
+      "len": 16,
+      "sha256": "a0cd16556d0fce7e"
+     },
+     {
+      "addr": "04840000",
+      "len": 16,
+      "sha256": "e6c836defa505e7a"
+     },
+     {
+      "addr": "05500000",
+      "len": 96,
+      "sha256": "aff22ec6eca16257"
+     }
+    ]
+   },
+   "anytone_890": {
+    "segments": 3,
+    "blocks": 10,
+    "sha256": "ba4404bb0f232d5e94b0015d040f4769f7761ff03911e276e235f24f03c33f94",
+    "table": [
+     {
+      "addr": "07000000",
+      "len": 16,
+      "sha256": "d1a4bed9445c3254"
+     },
+     {
+      "addr": "07080000",
+      "len": 16,
+      "sha256": "a0cd16556d0fce7e"
+     },
+     {
+      "addr": "07900000",
+      "len": 128,
+      "sha256": "db9b17eb44342f95"
+     }
+    ]
+   }
+  },
+  "2": {
+   "anytone_878": {
+    "segments": 3,
+    "blocks": 11,
+    "sha256": "74face7df685f929fc279ed6c492dcca82f5e59cb23c0da13e0861b1d4ff5574",
+    "table": [
+     {
+      "addr": "04000000",
+      "len": 16,
+      "sha256": "935a2f7fefe11093"
+     },
+     {
+      "addr": "04840000",
+      "len": 16,
+      "sha256": "c70bf4572f0dd06f"
+     },
+     {
+      "addr": "05500000",
+      "len": 144,
+      "sha256": "051bcac1ed9bbf74"
+     }
+    ]
+   },
+   "anytone_890": {
+    "segments": 3,
+    "blocks": 18,
+    "sha256": "35c36aa1f9c803128cf9aae3dac528ceb23baf25e7181696e8bfd87fb5f6af0c",
+    "table": [
+     {
+      "addr": "07000000",
+      "len": 16,
+      "sha256": "b48ebb2ad0b52e17"
+     },
+     {
+      "addr": "07080000",
+      "len": 16,
+      "sha256": "4ba1531fd536b159"
+     },
+     {
+      "addr": "07900000",
+      "len": 256,
+      "sha256": "6493be7ee81627e6"
+     }
+    ]
+   }
+  },
+  "37": {
+   "anytone_878": {
+    "segments": 3,
+    "blocks": 150,
+    "sha256": "937020a23d05b312e019f34c4cbe27e96408b6b1894473a594fc4e7c7a00eb7d",
+    "table": [
+     {
+      "addr": "04000000",
+      "len": 304,
+      "sha256": "5bf0e5fe16c289af"
+     },
+     {
+      "addr": "04840000",
+      "len": 16,
+      "sha256": "d9bd599b8420e2d6"
+     },
+     {
+      "addr": "05500000",
+      "len": 2080,
+      "sha256": "abe440276b751f0e"
+     }
+    ]
+   },
+   "anytone_890": {
+    "segments": 3,
+    "blocks": 260,
+    "sha256": "ffef83c931dc48fb8ef20a9ec70d6042c5bcdba65dd5b8810b7ee3eb80f00073",
+    "table": [
+     {
+      "addr": "07000000",
+      "len": 16,
+      "sha256": "f3a7f178bfbac61d"
+     },
+     {
+      "addr": "07080000",
+      "len": 304,
+      "sha256": "b6e93c40a6a91152"
+     },
+     {
+      "addr": "07900000",
+      "len": 3840,
+      "sha256": "2d1f626c59b0f13b"
+     }
+    ]
+   }
+  },
+  "3200": {
+   "anytone_878": {
+    "segments": 4,
+    "blocks": 12657,
+    "sha256": "3d2edf78a927d649295dd08dcd9e8c487e58009514badcab4f78376c6b03a503",
+    "table": [
+     {
+      "addr": "04000000",
+      "len": 25600,
+      "sha256": "f26f135ffb36a735"
+     },
+     {
+      "addr": "04840000",
+      "len": 16,
+      "sha256": "106c0ea54fc82f2c"
+     },
+     {
+      "addr": "05500000",
+      "len": 100000,
+      "sha256": "9ba91ba58690833f"
+     },
+     {
+      "addr": "05540000",
+      "len": 76896,
+      "sha256": "105e89cda0c81726"
+     }
+    ]
+   },
+   "anytone_890": {
+    "segments": 4,
+    "blocks": 22509,
+    "sha256": "c4c9b33c4aaaafe59c295844882b79955fb50979883e0a72d14432a9ef8d4590",
+    "table": [
+     {
+      "addr": "07000000",
+      "len": 16,
+      "sha256": "c011db77a20e65f8"
+     },
+     {
+      "addr": "07080000",
+      "len": 25600,
+      "sha256": "4615aab287430328"
+     },
+     {
+      "addr": "07900000",
+      "len": 200000,
+      "sha256": "e9115a204065cb26"
+     },
+     {
+      "addr": "07980000",
+      "len": 134528,
+      "sha256": "f3507a8f89fce5fb"
+     }
+    ]
+   }
+  },
+  "12000": {
+   "anytone_878": {
+    "segments": 9,
+    "blocks": 47602,
+    "sha256": "adeb7c244e390f5ea35301e4c40fd0de37efcbf9d9b8705abbfa70f8ee3d02e3",
+    "table": [
+     {
+      "addr": "04000000",
+      "len": 96000,
+      "sha256": "6b6db66ebd49c245"
+     },
+     {
+      "addr": "04840000",
+      "len": 16,
+      "sha256": "50a4851221b2713a"
+     },
+     {
+      "addr": "05500000",
+      "len": 100000,
+      "sha256": "9ba91ba58690833f"
+     },
+     {
+      "addr": "05540000",
+      "len": 100000,
+      "sha256": "03a5a53fa5037694"
+     },
+     {
+      "addr": "05580000",
+      "len": 100000,
+      "sha256": "9ebdbcda61ac376f"
+     },
+     {
+      "addr": "055c0000",
+      "len": 100000,
+      "sha256": "80e8f79a9b3caa9d"
+     },
+     {
+      "addr": "05600000",
+      "len": 100000,
+      "sha256": "602adc9dbf4bc2b9"
+     },
+     {
+      "addr": "05640000",
+      "len": 100000,
+      "sha256": "9d0a793a696f93ad"
+     },
+     {
+      "addr": "05680000",
+      "len": 65616,
+      "sha256": "916b4b3ea0beb3a8"
+     }
+    ]
+   },
+   "anytone_890": {
+    "segments": 9,
+    "blocks": 84697,
+    "sha256": "b10bc36261beb28ea97f3691b9c0f28d3d5fb98adae7d12bbccbd3b6b00f78d2",
+    "table": [
+     {
+      "addr": "07000000",
+      "len": 16,
+      "sha256": "6eaed71d6ee2e650"
+     },
+     {
+      "addr": "07080000",
+      "len": 96000,
+      "sha256": "01de52ffaddcbddb"
+     },
+     {
+      "addr": "07900000",
+      "len": 200000,
+      "sha256": "e9115a204065cb26"
+     },
+     {
+      "addr": "07980000",
+      "len": 200000,
+      "sha256": "edaebd3d7a402f8c"
+     },
+     {
+      "addr": "07a00000",
+      "len": 200000,
+      "sha256": "d19058a0f3a7bd50"
+     },
+     {
+      "addr": "07a80000",
+      "len": 200000,
+      "sha256": "f50a62778b0cecd1"
+     },
+     {
+      "addr": "07b00000",
+      "len": 200000,
+      "sha256": "f1bf5ff30410d1f6"
+     },
+     {
+      "addr": "07b80000",
+      "len": 200000,
+      "sha256": "e918403bd5e54df5"
+     },
+     {
+      "addr": "07c00000",
+      "len": 59136,
+      "sha256": "ed86f87b63e739d0"
+     }
+    ]
+   }
+  }
+ },
+ "nx": {
+  "1": {
+   "segments": 3,
+   "blocks": 15,
+   "sha256": "87f5f8e409e082b613dc6873b64922e0d581e9fb8f6caa969d4e7772f04cb3ce",
+   "table": [
+    {
+     "addr": "18280000",
+     "len": 16,
+     "sha256": "d7e819775c335d26"
+    },
+    {
+     "addr": "18300000",
+     "len": 208,
+     "sha256": "6fea25c4b62c7a39"
+    },
+    {
+     "addr": "1a400000",
+     "len": 16,
+     "sha256": "5e9a5de4a59a7c3c"
+    }
+   ]
+  },
+  "7": {
+   "segments": 3,
+   "blocks": 93,
+   "sha256": "1b43a863b12bebf0bdad961e513510e0ef7f243edfcf80cb5d893f6e78623fb0",
+   "table": [
+    {
+     "addr": "18280000",
+     "len": 16,
+     "sha256": "fa54bc59be724fb5"
+    },
+    {
+     "addr": "18300000",
+     "len": 1408,
+     "sha256": "d56e07e49f13e059"
+    },
+    {
+     "addr": "1a400000",
+     "len": 64,
+     "sha256": "bf658fbd3c4b78aa"
+    }
+   ]
+  },
+  "1000": {
+   "segments": 3,
+   "blocks": 13008,
+   "sha256": "77fe5f0fd59ba69237c0288feb434409fcac58c8113cdb2cfa691316c710aaff",
+   "table": [
+    {
+     "addr": "18280000",
+     "len": 128,
+     "sha256": "804cbaf996db39f1"
+    },
+    {
+     "addr": "18300000",
+     "len": 200000,
+     "sha256": "8b863c309d14f350"
+    },
+    {
+     "addr": "1a400000",
+     "len": 8000,
+     "sha256": "27f4b365401686ec"
+    }
+   ]
+  },
+  "2600": {
+   "segments": 5,
+   "blocks": 33821,
+   "sha256": "6eb0ca9199372f094d0d575a2b6ecd77535db0407c37006b4c26be8fed3364f0",
+   "table": [
+    {
+     "addr": "18280000",
+     "len": 336,
+     "sha256": "ac884c2d2d3d6e31"
+    },
+    {
+     "addr": "18300000",
+     "len": 200000,
+     "sha256": "8b863c309d14f350"
+    },
+    {
+     "addr": "18380000",
+     "len": 200000,
+     "sha256": "735d826d1ffc062b"
+    },
+    {
+     "addr": "18400000",
+     "len": 120000,
+     "sha256": "815b0d7d5443022e"
+    },
+    {
+     "addr": "1a400000",
+     "len": 20800,
+     "sha256": "244ed2ae8fe12b8a"
+    }
+   ]
+  }
+ }
+}

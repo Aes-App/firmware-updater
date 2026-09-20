@@ -1,0 +1,18 @@
+# Normalize text to LF in the repo and on checkout (keeps the shell scripts and
+# Python working on macOS/Linux regardless of a global core.autocrlf setting).
+* text=auto eol=lf
+
+# Windows-native scripts keep CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets — never munge line endings
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.ico  binary
+*.icns binary
+*.so   binary
+*.ufw  binary
+*.bin  binary
