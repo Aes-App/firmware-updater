@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import types
 
 import pytest
@@ -31,7 +32,8 @@ def _window(height, width=980, server=True):
         root.attributes("-alpha", 0.0)
     except tk.TclError:
         pass
-    root.geometry("%dx%d+20+20" % (width, height))
+    if height is not None:
+        root.geometry("%dx%d+20+20" % (width, height))
     header = ttk.Frame(root)
     header.pack(fill="x", padx=8, pady=6)
     gui._brand_header(header, small=True).pack(side="left")
@@ -53,6 +55,20 @@ def _settle(root):
     for _ in range(6):
         root.update_idletasks()
         root.update()
+
+
+def _pump(root, seconds):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        root.update()
+        time.sleep(0.005)
+
+
+def _press_start(tab, monkeypatch):
+    from radio_fw import gui_tab
+    monkeypatch.setattr(gui_tab.messagebox, "askyesno", lambda *a, **k: True)
+    tab.plan = [types.SimpleNamespace(kind=k) for k in (spec.KIND_FW, spec.KIND_ICON)]
+    tab._begin_radio()
 
 
 def _visible(root, widget) -> bool:
@@ -133,6 +149,37 @@ def test_long_labels_wrap_to_the_window_not_to_a_fixed_width():
         assert int(float(str(banner.cget("wraplength")))) > 1000
     finally:
         root.destroy()
+
+
+def test_start_does_not_resize_the_window(monkeypatch):
+    root, tab = _window(None)
+    sizes = set()
+    try:
+        gui._pin_window_size(root)
+        _pump(root, 0.3)
+        opened = (root.winfo_width(), root.winfo_height())
+        root.bind("<Configure>", lambda e: sizes.add((root.winfo_width(), root.winfo_height()))
+                  if e.widget is root else None, add="+")
+        _press_start(tab, monkeypatch)
+        _pump(root, 1.0)
+    finally:
+        root.destroy()
+    assert sizes <= {opened}, "Start resized the window from %s through %s" % (opened, sorted(sizes))
+
+
+def test_the_step_text_is_never_wrapped_into_the_photo(monkeypatch):
+    root, tab = _window(800)
+    wraps = []
+    try:
+        tab._wbody.bind("<Configure>", lambda _e: wraps.append(
+            int(float(str(tab.winstr.cget("wraplength"))))), add="+")
+        _press_start(tab, monkeypatch)
+        _pump(root, 0.5)
+        room = tab._wbody.winfo_width() - tab.wimage.winfo_reqwidth() - 20
+    finally:
+        root.destroy()
+    assert wraps, "the step row was never laid out"
+    assert max(wraps) <= room + 4, "wrapped at %d px beside a photo that leaves %d" % (max(wraps), room)
 
 
 def _contact_window(height, width=980):

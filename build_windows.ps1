@@ -186,7 +186,10 @@ Write-Host "== Installing build deps ==" -ForegroundColor Cyan
 & $py -m pip install bleak pyserial pyinstaller pillow certifi pytest
 
 Write-Host "== Sanity: imports + pure-Python auth (no unicorn) ==" -ForegroundColor Cyan
-$env:JL_OTA_AUTH_SO = (Resolve-Path "bt_ota\libjl_ota_auth.so")
+# .ProviderPath, not the PathInfo itself: on a share (\\Mac\...) the latter reads
+# "Microsoft.PowerShell.Core\FileSystem::\\Mac\...", which Python cannot open,
+# and this check then failed while the build carried on regardless.
+$env:JL_OTA_AUTH_SO = (Resolve-Path "bt_ota\libjl_ota_auth.so").ProviderPath
 & $py -c "import bleak; from bt_ota.jl_auth import AuthEmulator, _HAVE_UNICORN; print('auth sample (unicorn=%s):' % _HAVE_UNICORN, AuthEmulator().get_encrypted_auth_data(bytes([0]+list(range(1,17)))).hex())"
 
 # The Digital Contact Refresh tab builds a list from an operator's own register

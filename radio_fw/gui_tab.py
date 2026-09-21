@@ -135,7 +135,7 @@ class _Row:
         self.version_lbl = ttk.Label(frame, text="", foreground="#0b5f99")
         self.version_lbl.grid(row=0, column=3, sticky="e", padx=(6, 0))
         _follow_width(self.status, frame,
-                      reserve=lambda: self.cb.winfo_width() + self.version_lbl.winfo_width() + 18)
+                      reserve=lambda: self.cb.winfo_reqwidth() + self.version_lbl.winfo_reqwidth() + 18)
 
     def _pick(self):
         multi = spec.is_multi(self.kind)
@@ -652,7 +652,7 @@ class RadioBoardsTab:
         self.winstr = ttk.Label(body, justify="left", wraplength=380,
                                 foreground="#7a1020", font=("", 11))
         self.winstr.pack(side="left", anchor="n", fill="x", expand=True)
-        _follow_width(self.winstr, body, reserve=lambda: self.wimage.winfo_width() + 20)
+        _follow_width(self.winstr, body, reserve=lambda: self.wimage.winfo_reqwidth() + 20)
 
         self.wctl = ttk.Frame(self.wizard)
         self.wctl.pack(fill="x", pady=(4, 0))
@@ -704,7 +704,7 @@ class RadioBoardsTab:
         self.mcu_reset_lbl = ttk.Label(_mcu_body, justify="left", wraplength=420,
                                        foreground="#7a1020", font=("", 11))
         self.mcu_reset_lbl.pack(side="left", anchor="n", fill="x", expand=True)
-        _follow_width(self.mcu_reset_lbl, _mcu_body, reserve=lambda: self._mcu_label.winfo_width() + 20)
+        _follow_width(self.mcu_reset_lbl, _mcu_body, reserve=lambda: self._mcu_label.winfo_reqwidth() + 20)
         ttk.Button(again, text="Update another radio (same selection)", command=self._again).pack(side="left")
         ttk.Button(again, text="Back to setup", command=self._back_to_setup).pack(side="left", padx=8)
 

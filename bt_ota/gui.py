@@ -17,7 +17,7 @@ from .client import MODELS, firmware_kind, make_client, scan_devices
 APP_TITLE = "AesApp Radio Updater"
 VENDOR = "AesApp Inc."
 WEBSITE = "https://aes.app/"
-VERSION = "0.9.1"
+VERSION = "0.9.2"
 LOG_PREFIX = "[aesapp]"
 
 try:
@@ -224,6 +224,11 @@ def run_disclaimer_gate(root) -> bool:
     root.wait_variable(done)
     frame.destroy()
     return result["ok"]
+
+
+def _pin_window_size(root):
+    root.update_idletasks()
+    root.geometry("%dx%d" % (root.winfo_reqwidth(), root.winfo_reqheight()))
 
 
 def _bring_to_front(root):
@@ -857,6 +862,7 @@ def main(url: str | None = None):
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", _on_close)
+    _pin_window_size(root)
     _bring_to_front(root)
     root.mainloop()
 
