@@ -108,7 +108,7 @@ def main():
         with open(path, "w", encoding="utf-8", newline="") as f:
             f.write(csv_text(rows(n)))
         entry = {}
-        for fmt in ("anytone_878", "anytone_890"):
+        for fmt in ("anytone_878", "anytone_878uv", "anytone_890"):
             segs, count = cb.build_segments(path, fmt)
             assert count == n, (fmt, count, n)
             entry[fmt] = digest(segs)

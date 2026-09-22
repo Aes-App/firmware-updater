@@ -21,7 +21,7 @@ class RadioSpec:
 
 
 RADIOS: Dict[str, RadioSpec] = {
-    "D878UV": RadioSpec("D878UV", "AnyTone AT-D878UV", "anytone_878", None, 200000),
+    "D878UV": RadioSpec("D878UV", "AnyTone AT-D878UV", "anytone_878uv", None, 200000),
     "D878UV2": RadioSpec("D878UV2", "AnyTone AT-D878UVII", "anytone_878", None, 500000),
     "D578UV": RadioSpec("D578UV", "AnyTone AT-D578UV", "anytone_878", None, 500000),
     "D578UV2": RadioSpec("D578UV2", "AnyTone AT-D578UVII", "anytone_878", None, 500000),
@@ -51,6 +51,10 @@ BLOCK = seg.BLOCK
 PAGE_878 = 0x40000
 IDX_878, HDR_878, BODY_878 = 0x04000000, 0x04840000, 0x05500000
 IDX_878_PER_PAGE, BODY_878_PER_PAGE = 128000, 100000
+
+IDX_878UV, HDR_878UV, BODY_878UV = 0x04000000, 0x044C0000, 0x04500000
+TG_INDEX_878UV = 0x04340000
+BODY_END_878UV = 0x07700000
 BODY_GUARD_BYTES = 48
 
 PAGE_890 = 0x80000
@@ -78,6 +82,10 @@ def _is_contact_addr_878(a: int) -> bool:
     return (IDX_878 <= a < 0x04800000) or a >= HDR_878
 
 
+def _is_contact_addr_878uv(a: int) -> bool:
+    return (IDX_878UV <= a < TG_INDEX_878UV) or (HDR_878UV <= a < BODY_END_878UV)
+
+
 def _is_contact_addr_890(a: int) -> bool:
     return (0x07000000 <= a < 0x18000000) or (0x18280000 <= a < 0x1B000000)
 
@@ -90,7 +98,9 @@ def _never_write(a: int) -> bool:
 
 
 def check_plan(plan: Sequence[seg.Segment], fmt: str) -> None:
-    guard = _is_contact_addr_890 if fmt in ("anytone_890", "anytone_890_nx") else _is_contact_addr_878
+    guard = (_is_contact_addr_890 if fmt in ("anytone_890", "anytone_890_nx")
+             else _is_contact_addr_878uv if fmt == "anytone_878uv"
+             else _is_contact_addr_878)
     for s in plan:
         for off in range(0, len(s.data), BLOCK):
             a = s.addr + off
@@ -526,6 +536,10 @@ def build_dmr_segments(store: ContactStore, fmt: str, codes: Optional[Iterable[s
         page, idx_base, body_base = PAGE_878, IDX_878, BODY_878
         idx_per, body_per = IDX_878_PER_PAGE, BODY_878_PER_PAGE
         header_addr, record = HDR_878, _record_878
+    elif fmt == "anytone_878uv":
+        page, idx_base, body_base = PAGE_878, IDX_878UV, BODY_878UV
+        idx_per, body_per = IDX_878_PER_PAGE, BODY_878_PER_PAGE
+        header_addr, record = HDR_878UV, _record_878
     elif fmt == "anytone_890":
         page, idx_base, body_base = PAGE_890, IDX_890, BODY_890
         idx_per, body_per = IDX_890_PER_PAGE, BODY_890_PER_PAGE
@@ -553,7 +567,7 @@ def build_dmr_segments(store: ContactStore, fmt: str, codes: Optional[Iterable[s
               + (body_base + _physical_end(data_len, body_per, page)).to_bytes(4, "little")
               + b"\x00" * 8)
 
-    if fmt == "anytone_878":
+    if fmt in ("anytone_878", "anytone_878uv"):
         body.pad_to_block()
         body.push(b"\x00" * BODY_GUARD_BYTES)
     else:

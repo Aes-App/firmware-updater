@@ -33,7 +33,7 @@ _LOG_WEIGHT = 3
 _SECTION_WEIGHT = 1
 _TREE_KEEP_PX = 0
 
-_EST_BLOCKS_PER_CONTACT = {"anytone_878": 4.0, "anytone_890": 7.0}
+_EST_BLOCKS_PER_CONTACT = {"anytone_878": 4.0, "anytone_878uv": 4.0, "anytone_890": 7.0}
 
 _TICK_ON, _TICK_OFF, _TICK_SOME = "☑", "☐", "▣"
 
@@ -1131,6 +1131,16 @@ class ContactRefreshTab:
             if local is not None:
                 plan = self._build_local_plan(local, log)
             else:
+                spec = contact_build.radio_for_ident(model)
+                for bd, want, kind in ((bundle, spec.fmt if spec else None, "digital contact"),
+                                       (nx_bundle, spec.nx_fmt if spec else None, "NXDN")):
+                    got = (bd or {}).get("format")
+                    if bd is not None and want and got and got != want:
+                        raise catalog.ContactsError(
+                            "This %s list is in %s format and the %s uses %s. The app and the "
+                            "server disagree about this radio, so nothing has been written -- "
+                            "update the app, and report this if it persists."
+                            % (kind, got, spec.label, want))
                 plans = []
                 for bd in ([bundle] + ([nx_bundle] if nx_bundle else [])):
                     log("fetching " + catalog.bundle_label(bd), "info")

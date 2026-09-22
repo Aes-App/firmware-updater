@@ -97,7 +97,7 @@ def _digest(plan):
 
 
 @pytest.mark.parametrize("count", sorted(EXPECTED["dmr"], key=int))
-@pytest.mark.parametrize("fmt", ["anytone_878", "anytone_890"])
+@pytest.mark.parametrize("fmt", ["anytone_878", "anytone_878uv", "anytone_890"])
 def test_dmr_matches_the_server_encoder(tmp_path, count, fmt):
     path = _write_csv(str(tmp_path / ("list%s.csv" % count)), int(count))
     store = cb.read_user_csv(path, min_bytes=0)
@@ -131,7 +131,7 @@ def test_the_index_key_matches_the_radios_own_map():
 
 def test_a_plan_never_leaves_the_contact_area(tmp_path):
     store = cb.read_user_csv(_write_csv(str(tmp_path / "l.csv"), 3200), min_bytes=0)
-    for fmt in ("anytone_878", "anytone_890"):
+    for fmt in ("anytone_878", "anytone_878uv", "anytone_890"):
         cb.check_plan(cb.build_dmr_segments(store, fmt), fmt)
     cb.check_plan(cb.build_nx_segments(_nx_rows(2600)), "anytone_890_nx")
 
@@ -141,6 +141,31 @@ def test_a_plan_never_leaves_the_contact_area(tmp_path):
         cb.check_plan([seg.Segment(0x04F80000, bytes(16))], "anytone_890")
     with pytest.raises(cb.ContactBuildError):
         cb.check_plan([seg.Segment(0x18180000, bytes(16))], "anytone_890_nx")
+
+
+def test_the_first_generation_878_writes_its_own_addresses(tmp_path):
+    store = cb.read_user_csv(_write_csv(str(tmp_path / "l.csv"), 3200), min_bytes=0)
+    gen1 = cb.build_dmr_segments(store, "anytone_878uv")
+    uvii = cb.build_dmr_segments(store, "anytone_878")
+
+    assert [s.addr for s in gen1] == [0x04000000, 0x044C0000, 0x04500000, 0x04540000]
+    assert [s.addr for s in uvii] == [0x04000000, 0x04840000, 0x05500000, 0x05540000]
+    assert [len(s.data) for s in gen1] == [len(s.data) for s in uvii]
+    index, header, *body = gen1
+    assert index.data == uvii[0].data, "the index holds offsets, so it does not move"
+    assert [s.data for s in body] == [s.data for s in uvii[2:]]
+    end_gen1 = int.from_bytes(header.data[4:8], "little")
+    end_uvii = int.from_bytes(uvii[1].data[4:8], "little")
+    assert end_gen1 == end_uvii - (cb.BODY_878 - cb.BODY_878UV) == 0x04552C2C
+    assert header.data[:4] == uvii[1].data[:4], "the count is the same list"
+
+    for addr in (0x04340000, 0x04400000, 0x044BFFF0, 0x07700000):
+        with pytest.raises(cb.ContactBuildError):
+            cb.check_plan([seg.Segment(addr, bytes(16))], "anytone_878uv")
+    cb.check_plan([seg.Segment(0x04340000, bytes(16))], "anytone_878")
+    cb.check_plan([seg.Segment(0x05500000, bytes(16))], "anytone_878uv")
+    with pytest.raises(cb.ContactBuildError):
+        cb.check_plan([seg.Segment(0x04800000, bytes(16))], "anytone_878")
 
 
 def test_a_country_selection_writes_exactly_what_it_selects(tmp_path):
@@ -222,6 +247,8 @@ def test_a_file_that_is_not_a_register_is_refused(tmp_path):
 def test_the_radio_table_is_exact_and_excludes_the_868(tmp_path):
     assert cb.radio_for_ident("D878UV").capacity == 200000
     assert cb.radio_for_ident("D878UV2").capacity == 500000
+    assert cb.radio_for_ident("D878UV").fmt == "anytone_878uv"
+    assert cb.radio_for_ident("D878UV2").fmt == "anytone_878"
     assert cb.radio_for_ident("D578UV").capacity == 500000
     assert cb.radio_for_ident("D168UV").fmt == "anytone_878"
     assert cb.radio_for_ident("D890UV").nx_fmt == "anytone_890_nx"

@@ -23,6 +23,28 @@
      }
     ]
    },
+   "anytone_878uv": {
+    "segments": 3,
+    "blocks": 8,
+    "sha256": "d2111d7d687e5d74f2d027057c7d3a99287b3a9b16e2571f4f056b2521d96eb9",
+    "table": [
+     {
+      "addr": "04000000",
+      "len": 16,
+      "sha256": "a0cd16556d0fce7e"
+     },
+     {
+      "addr": "044c0000",
+      "len": 16,
+      "sha256": "ee10e746c959878b"
+     },
+     {
+      "addr": "04500000",
+      "len": 96,
+      "sha256": "aff22ec6eca16257"
+     }
+    ]
+   },
    "anytone_890": {
     "segments": 3,
     "blocks": 10,
@@ -64,6 +86,28 @@
      },
      {
       "addr": "05500000",
+      "len": 144,
+      "sha256": "051bcac1ed9bbf74"
+     }
+    ]
+   },
+   "anytone_878uv": {
+    "segments": 3,
+    "blocks": 11,
+    "sha256": "32e22fbfdea274faaca911a87aa35b620db68e7394fef16e7b186ab710461bfe",
+    "table": [
+     {
+      "addr": "04000000",
+      "len": 16,
+      "sha256": "935a2f7fefe11093"
+     },
+     {
+      "addr": "044c0000",
+      "len": 16,
+      "sha256": "35f4fbbbadd11c1f"
+     },
+     {
+      "addr": "04500000",
       "len": 144,
       "sha256": "051bcac1ed9bbf74"
      }
@@ -115,6 +159,28 @@
      }
     ]
    },
+   "anytone_878uv": {
+    "segments": 3,
+    "blocks": 150,
+    "sha256": "b718166278ad2dc6a744617fcb83e426d7dbb17c89d5550905f9aaafeef2bcfa",
+    "table": [
+     {
+      "addr": "04000000",
+      "len": 304,
+      "sha256": "5bf0e5fe16c289af"
+     },
+     {
+      "addr": "044c0000",
+      "len": 16,
+      "sha256": "01b533534980fd66"
+     },
+     {
+      "addr": "04500000",
+      "len": 2080,
+      "sha256": "abe440276b751f0e"
+     }
+    ]
+   },
    "anytone_890": {
     "segments": 3,
     "blocks": 260,
@@ -161,6 +227,33 @@
      },
      {
       "addr": "05540000",
+      "len": 76896,
+      "sha256": "105e89cda0c81726"
+     }
+    ]
+   },
+   "anytone_878uv": {
+    "segments": 4,
+    "blocks": 12657,
+    "sha256": "ffe33ebc5e5f97a70d0bf78e3d2519a04e01baf93dff37b9d79c0f2afbe220b3",
+    "table": [
+     {
+      "addr": "04000000",
+      "len": 25600,
+      "sha256": "f26f135ffb36a735"
+     },
+     {
+      "addr": "044c0000",
+      "len": 16,
+      "sha256": "e6718a7bf8d78a12"
+     },
+     {
+      "addr": "04500000",
+      "len": 100000,
+      "sha256": "9ba91ba58690833f"
+     },
+     {
+      "addr": "04540000",
       "len": 76896,
       "sha256": "105e89cda0c81726"
      }
@@ -242,6 +335,58 @@
      },
      {
       "addr": "05680000",
+      "len": 65616,
+      "sha256": "916b4b3ea0beb3a8"
+     }
+    ]
+   },
+   "anytone_878uv": {
+    "segments": 9,
+    "blocks": 47602,
+    "sha256": "76adfcb22ede11fc8219123beb25b441f418bee7bb8ca55305a6971f74da2f68",
+    "table": [
+     {
+      "addr": "04000000",
+      "len": 96000,
+      "sha256": "6b6db66ebd49c245"
+     },
+     {
+      "addr": "044c0000",
+      "len": 16,
+      "sha256": "b3fa4be75f5d6aeb"
+     },
+     {
+      "addr": "04500000",
+      "len": 100000,
+      "sha256": "9ba91ba58690833f"
+     },
+     {
+      "addr": "04540000",
+      "len": 100000,
+      "sha256": "03a5a53fa5037694"
+     },
+     {
+      "addr": "04580000",
+      "len": 100000,
+      "sha256": "9ebdbcda61ac376f"
+     },
+     {
+      "addr": "045c0000",
+      "len": 100000,
+      "sha256": "80e8f79a9b3caa9d"
+     },
+     {
+      "addr": "04600000",
+      "len": 100000,
+      "sha256": "602adc9dbf4bc2b9"
+     },
+     {
+      "addr": "04640000",
+      "len": 100000,
+      "sha256": "9d0a793a696f93ad"
+     },
+     {
+      "addr": "04680000",
       "len": 65616,
       "sha256": "916b4b3ea0beb3a8"
      }

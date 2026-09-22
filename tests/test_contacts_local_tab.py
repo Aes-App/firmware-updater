@@ -266,6 +266,33 @@ def test_the_filter_changes_what_is_drawn_and_not_what_is_ticked(tab):
     assert len(tab._sel_codes) == len(picked)
 
 
+def test_a_bundle_for_another_radios_database_is_refused(tab, monkeypatch):
+    posted = []
+    monkeypatch.setattr(gt.catalog, "download_artifact",
+                        lambda *_a, **_k: (_ for _ in ()).throw(
+                            AssertionError("must refuse before fetching anything")))
+    monkeypatch.setattr(gt.engine, "write_contacts",
+                        lambda *_a, **_k: (_ for _ in ()).throw(
+                            AssertionError("must refuse before writing anything")))
+    monkeypatch.setattr(tab, "_post", lambda kind, payload: posted.append((kind, payload)))
+
+    tab._write_worker("COM9", "https://cps.aes.app", "tok",
+                      {"format": "anytone_878", "list": "full", "sha256": "x"},
+                      None, "D878UV", None, None)
+
+    kind, (msg, aborted) = posted[-1]
+    assert kind == "write_err" and not aborted
+    assert "anytone_878" in msg and "anytone_878uv" in msg and "nothing has been written" in msg
+
+    posted.clear()
+    monkeypatch.setattr(gt.catalog, "download_artifact",
+                        lambda *_a, **_k: (_ for _ in ()).throw(gt.catalog.ContactsError("fetched")))
+    tab._write_worker("COM9", "https://cps.aes.app", "tok",
+                      {"format": "anytone_878uv", "list": "full", "sha256": "x"},
+                      None, "D878UV", None, None)
+    assert posted[-1][1][0] == "fetched"
+
+
 def test_the_write_worker_builds_the_plan_here_instead_of_downloading(tab, monkeypatch):
     captured = {}
 
@@ -291,7 +318,8 @@ def test_the_write_worker_builds_the_plan_here_instead_of_downloading(tab, monke
 
     assert captured["model"] == "D878UV"
     assert captured["link"] is held, "the held PC-mode session must still be reused"
-    want = cb.build_dmr_segments(store, "anytone_878", ["GBR", "DEU"])
+    want = cb.build_dmr_segments(store, "anytone_878uv", ["GBR", "DEU"])
+    assert cb.radio_for_ident("D878UV").fmt == "anytone_878uv"
     assert [(s.addr, s.data) for s in captured["plan"]] == [(s.addr, s.data) for s in want]
     assert "built on this computer" in tab.log.get("1.0", "end")
     assert "Done" in tab.wstatus.cget("text")
