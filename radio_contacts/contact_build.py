@@ -90,11 +90,15 @@ def _is_contact_addr_890(a: int) -> bool:
     return (0x07000000 <= a < 0x18000000) or (0x18280000 <= a < 0x1B000000)
 
 
-_NEVER_WRITE = ((0x02F9FFF0, 0x02FA0100), (0x04F80000, 0x04F80100))
+_OPTION_BLOCK_878 = (0x02F9FFF0, 0x02FA0100)
+_OPTION_BLOCK_890 = (0x04F80000, 0x04F80100)
+_NEVER_WRITE_878 = (_OPTION_BLOCK_878,)
+_NEVER_WRITE_890 = (_OPTION_BLOCK_890,)
 
 
-def _never_write(a: int) -> bool:
-    return any(lo <= a < hi for lo, hi in _NEVER_WRITE)
+def _never_write(a: int, fmt: str) -> bool:
+    ranges = _NEVER_WRITE_890 if fmt in ("anytone_890", "anytone_890_nx") else _NEVER_WRITE_878
+    return any(lo <= a < hi for lo, hi in ranges)
 
 
 def check_plan(plan: Sequence[seg.Segment], fmt: str) -> None:
@@ -104,7 +108,7 @@ def check_plan(plan: Sequence[seg.Segment], fmt: str) -> None:
     for s in plan:
         for off in range(0, len(s.data), BLOCK):
             a = s.addr + off
-            if not guard(a) or _never_write(a):
+            if not guard(a) or _never_write(a, fmt):
                 raise ContactBuildError(
                     "refusing to write outside the contact area, at 0x%08X. This is a bug in the "
                     "list builder, not something you did -- nothing has been sent to the radio." % a)

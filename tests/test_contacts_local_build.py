@@ -168,6 +168,22 @@ def test_the_first_generation_878_writes_its_own_addresses(tmp_path):
         cb.check_plan([seg.Segment(0x04800000, bytes(16))], "anytone_878")
 
 
+def test_each_radio_protects_its_own_option_block_and_only_that(tmp_path):
+    store = cb.read_user_csv(_write_csv(str(tmp_path / "big.csv"), 80000), min_bytes=0)
+    gen1 = cb.build_dmr_segments(store, "anytone_878uv")
+    assert any(s.addr == 0x04F80000 for s in gen1), "the list must reach body page 42"
+    cb.check_plan(gen1, "anytone_878uv")
+
+    with pytest.raises(cb.ContactBuildError):
+        cb.check_plan([seg.Segment(0x04F80000, bytes(16))], "anytone_890")
+    for fmt in ("anytone_878", "anytone_878uv"):
+        with pytest.raises(cb.ContactBuildError):
+            cb.check_plan([seg.Segment(0x02FA0000, bytes(16))], fmt)
+    assert not cb._never_write(0x02FA0000, "anytone_890"), "not the 890's block"
+    assert not cb._never_write(0x04F80000, "anytone_878uv"), "not the gen-1's block"
+    assert cb._never_write(0x02FA0000, "anytone_878") and cb._never_write(0x04F80000, "anytone_890")
+
+
 def test_a_country_selection_writes_exactly_what_it_selects(tmp_path):
     store = cb.read_user_csv(_write_csv(str(tmp_path / "l.csv"), 600), min_bytes=0)
     assert store.count_selected(None) == 600
