@@ -60,7 +60,7 @@ _CATALOG = {
     ],
 }
 
-SEEN = {"agents": [], "auth": []}
+SEEN = {"agents": [], "auth": [], "reports": []}
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -83,6 +83,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         return a[len("Bearer "):] if a.startswith("Bearer ") else ""
 
     def do_POST(self):
+        if self.path == "/api/desktop/radio-ops":
+            tok = self._auth()
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            if tok != "goodtokengoodtoken":
+                return self._send(401, json.dumps({"error": "invalid_session"}).encode())
+            if body.get("outcome") == "boom":
+                return self._send(500, b"oops", "text/plain")
+            SEEN["reports"].append(body)
+            self.send_response(204)
+            self.end_headers()
+            return None
         if self.path != "/api/contacts/session":
             return self._send(404, b"nope", "text/plain")
         tok = self._auth()
@@ -121,6 +132,7 @@ def server(monkeypatch, tmp_path):
     monkeypatch.setattr(download, "APP_VERSION", "9.9.9-test")
     SEEN["agents"].clear()
     SEEN["auth"].clear()
+    SEEN["reports"].clear()
     try:
         yield base
     finally:
@@ -134,7 +146,7 @@ def test_claim_session_ok_and_reports_the_app_version(server):
     s = catalog.claim_session(server, GOOD)
     assert s["ok"] and s["account"] == "s***@aes.app" and s["tier"] == "basic"
     assert SEEN["auth"][-1] == "Bearer " + GOOD
-    assert SEEN["agents"][-1] == "AesApp-Radio-Updater/9.9.9-test"
+    assert SEEN["agents"][-1].startswith("AesApp-Radio-Updater/9.9.9-test (")
 
 
 @pytest.mark.parametrize("token, code, status, hint", [
@@ -246,3 +258,16 @@ def test_the_890_estimate_matches_what_the_radio_actually_did():
     assert measured <= predicted <= measured * 1.25, predicted
     assert catalog.estimate_seconds(429_036, "anytone_878") > predicted
     assert catalog.estimate_seconds(429_036, None) > predicted
+
+
+def test_a_finished_write_is_reported_and_a_refused_report_is_only_false(server):
+    record = {"op": "write", "payload": "contacts", "outcome": "success", "duration_ms": 61000,
+              "radio": "D878UV2", "contacts_bytes": 16 * 1234}
+    assert catalog.report_radio_op(server, GOOD, record) is True
+    assert SEEN["reports"] == [record]
+    assert SEEN["auth"][-1] == "Bearer " + GOOD
+    assert SEEN["agents"][-1].startswith("AesApp-Radio-Updater/9.9.9-test (")
+    assert catalog.report_radio_op(server, "badtokenbadtoken12", record) is False
+    assert catalog.report_radio_op(server, GOOD, dict(record, outcome="boom")) is False
+    assert catalog.report_radio_op("http://127.0.0.1:9", GOOD, record, timeout=2) is False
+    assert len(SEEN["reports"]) == 1

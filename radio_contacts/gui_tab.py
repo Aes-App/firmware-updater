@@ -1127,6 +1127,8 @@ class ContactRefreshTab:
     def _write_worker(self, port, base, token, bundle, nx_bundle, model, abort, held=None,
                       local=None):
         log = lambda m, c="info": self._post("log", (m, c))
+        report = {"started": time.monotonic(), "write_at": None, "outcome": "failed",
+                  "summary": None, "error": None}
         try:
             if local is not None:
                 plan = self._build_local_plan(local, log)
@@ -1154,23 +1156,53 @@ class ContactRefreshTab:
                     plans.append(segs)
                 plan = seg.merge(*plans)
             self._t0 = time.monotonic()
+            report["write_at"] = self._t0
             summary = engine.write_contacts(
                 port, plan,
                 on_log=log,
                 on_progress=lambda d, t, p: self._post("progress", (d, t, p)),
                 abort=abort, expect_model=model, link=held)
             held = None
+            report.update(outcome="success", summary=summary)
             self._post("write_done", summary)
         except AbortedError as e:
             held = None
+            report.update(outcome="cancelled", error=str(e))
             self._post("write_err", (str(e), True))
         except (catalog.ContactsError, seg.SegmentError, contact_build.ContactBuildError) as e:
+            report["error"] = str(e)
             self._post("write_err", (str(e), False))
         except Exception as e:
+            report["error"] = str(e)
             self._post("write_err", (str(e), False))
         finally:
             if held is not None:
                 engine.close_session(held, log)
+            if token:
+                self._report_write(base, token, model, bundle, nx_bundle, report)
+
+    def _report_write(self, base, token, model, bundle, nx_bundle, report):
+        now = time.monotonic()
+        started, write_at = report["started"], report["write_at"]
+        summary = report["summary"] or {}
+        phases = {"prepare": (write_at if write_at is not None else now) - started}
+        if write_at is not None:
+            phases["contacts"] = now - write_at
+        records = sum(int((b or {}).get("recordCount") or 0) for b in (bundle, nx_bundle))
+        version = getattr(self.ident, "version", "") if self.ident is not None else ""
+        failed = report["outcome"] != "success"
+        catalog.report_radio_op(base, token, {
+            "op": "write", "payload": "contacts", "outcome": report["outcome"], "verification": "na",
+            "duration_ms": round((now - started) * 1000),
+            "phases_ms": {k: round(v * 1000) for k, v in phases.items()},
+            "contacts": records or None,
+            "contacts_bytes": int(summary.get("blocks") or 0) * 16 or None,
+            "frames": summary.get("frames"),
+            "radio": model,
+            "radio_ident": f"{model} {version}".strip(),
+            "error_stage": ("contacts" if write_at is not None else "prepare") if failed else None,
+            "error": report["error"],
+        })
 
     def _on_write_done(self, summary: dict):
         self._writing = False

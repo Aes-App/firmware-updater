@@ -28,7 +28,8 @@ def _app_version():
 VERSION = _app_version()
 
 datas, binaries, hiddenimports = [], [], []
-# bleak (BLE) + unicorn (auth emulator) + the pyobjc frameworks bleak uses on macOS
+# bleak (BLE) + unicorn (the optional validate emulator; auth is pure Python) + the
+# pyobjc frameworks bleak uses on macOS
 # + pyserial (the radio/boards firmware tab talks to the CDC-ACM port)
 for pkg in ("bleak", "unicorn", "CoreBluetooth", "Foundation", "libdispatch", "objc", "serial",
             "certifi"):   # certifi ships the CA bundle radio_fw.download needs in a frozen app

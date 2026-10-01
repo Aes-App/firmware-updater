@@ -40,8 +40,9 @@ len=0` (done) → `GetUpdateStatus 0xE6` → the module reboots to apply.
 (JieLi "RcspAuth"): host sends `00`+16 random, device replies `01`+`E(random)`,
 host replies `02 "pass"`, and vice-versa. `E()` is a fixed SAFER+/Bluetooth-E1
 style cipher with a **key baked into `libjl_ota_auth.so`** (the app never sets a
-custom key). We run that real native function under the Unicorn CPU emulator, so
-the crypto is byte-exact and host-portable — no need to re-derive it.
+custom key). We execute that real native function in pure Python (`_jl_e1.py`
+interprets its AArch64 code against the `.so`'s own tables), so the crypto is
+byte-exact and host-portable — no need to re-derive it.
 
 The `.ufw` itself is a scrambled JieLi container; **we never need to unscramble
 it** — the module's own bootloader does that. We stream the raw bytes it asks
@@ -80,7 +81,7 @@ WICED (`bt_ota/client.py`).
 ## Install
 
 ```bash
-pip install -r requirements.txt        # bleak + unicorn
+pip install -r requirements.txt        # bleak + pyserial (unicorn is optional: validate only)
 # one-time: pull the auth lib from the OTA APK you already have
 python -m bt_ota.extract_auth_lib "OTA V1.7.2.apk"
 ```
@@ -187,7 +188,7 @@ fallback, but it's untested).
 
 | file | purpose |
 |------|---------|
-| `jl_auth.py` | Unicorn oracle for `libjl_ota_auth.so` + the auth handshake |
+| `jl_auth.py` | the auth handshake over `libjl_ota_auth.so` (pure-Python E1 in `_jl_e1.py`; Unicorn only for `validate`) |
 | `rcsp.py`    | RCSP frame codec, opcodes, TargetInfo parser |
 | `ota.py`     | `bleak` BLE client + OTA state machine |
 | `__main__.py`| CLI (`scan` / `info` / `validate` / `upgrade`) |

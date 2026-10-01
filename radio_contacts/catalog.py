@@ -17,6 +17,7 @@ from radio_fw import download as _dl
 DEFAULT_BASE_URL = os.environ.get("AESAPP_FW_BASE_URL", "https://cps.aes.app")
 SESSION_PATH = "/api/contacts/session"
 CATALOG_PATH = "/api/contacts/catalog"
+RADIO_OPS_PATH = "/api/desktop/radio-ops"
 
 _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 _MAX_ATTEMPTS = 4
@@ -57,7 +58,7 @@ class _Retryable(Exception):
 
 
 def _user_agent() -> str:
-    return f"AesApp-Radio-Updater/{_dl.APP_VERSION}"
+    return _dl._user_agent()
 
 
 def cache_dir() -> str:
@@ -204,6 +205,16 @@ def fetch_catalog(base_url: str, token: str, timeout: float = 20.0,
     if not isinstance(d["bundles"], list) or not isinstance(d["radios"], dict):
         raise ContactsError("The server returned an unexpected catalog format.")
     return d
+
+
+def report_radio_op(base_url: str, token: str, record: dict, timeout: float = 10.0) -> bool:
+    url = urljoin(base_url.rstrip("/") + "/", RADIO_OPS_PATH.lstrip("/"))
+    try:
+        status, _ = _request("POST", url, token, timeout, payload=record, retry=False,
+                             pass_through=(400, 401, 403, 404, 410, 413))
+    except Exception:
+        return False
+    return 200 <= status < 300
 
 
 def download_artifact(base_url: str, token: str, bundle: dict, timeout: float = 300.0,

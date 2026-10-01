@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import socket
 import ssl
 import sys
@@ -21,8 +22,22 @@ _UA_NAME = "AesApp-Radio-Updater"
 APP_VERSION = "dev"
 
 
+def _platform() -> str:
+    try:
+        system, machine = platform.system(), platform.machine()
+        if system == "Darwin":
+            name = "macOS " + (platform.mac_ver()[0] or platform.release())
+        elif system == "Windows":
+            name = "Windows " + platform.version()
+        else:
+            name = f"{system or 'Unknown'} {platform.release()}"
+        return f"{name.strip()}; {machine or 'unknown'}"
+    except Exception:
+        return "unknown"
+
+
 def _user_agent() -> str:
-    return f"{_UA_NAME}/{APP_VERSION}"
+    return f"{_UA_NAME}/{APP_VERSION} ({_platform()})"
 
 _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 _MAX_ATTEMPTS = 4

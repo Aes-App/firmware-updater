@@ -131,6 +131,39 @@ def test_a_mismatch_is_verify_failed_not_a_failed_write(monkeypatch):
     assert res.mismatches == 1 and res.checked == 2
     assert res.first_mismatches[0]["addr"] == "02500010"
     assert "Write it again" in res.message
+    detail = res.detail()
+    assert detail["regions"] == {"02500000": 1}
+    assert detail["first"][0] == {"addr": "02500010", "wrote": bytes(range(0x10, 0x20)).hex(), "read": "00" * 16}
+
+
+def test_the_report_carries_up_to_64_mismatches_and_counts_every_one_by_page(monkeypatch):
+    bad = {0x02500000 + 0x10 * i: b"\x00" * 16 for i in range(300)}
+    dev = _EchoDevice(ident=IDENT_878, corrupt=bad)
+    _install(monkeypatch, dev)
+    _, _, on_log, on_progress = _sink()
+
+    res = cpe.write_codeplug("COM_TEST", _plan((0x02500000, 300)), [],
+                             on_log=on_log, on_progress=on_progress)
+
+    detail = res.detail()
+    assert res.outcome == "verify_failed" and detail["mismatches"] == 300 and detail["checked"] == 300
+    assert len(detail["first"]) == 64
+    assert detail["regions"] == {"02500000": 256, "02501000": 44}
+
+
+def test_the_report_times_every_phase_of_the_write(monkeypatch):
+    dev = _EchoDevice(ident=IDENT_878)
+    _install(monkeypatch, dev)
+    _, _, on_log, on_progress = _sink()
+
+    res = cpe.write_codeplug("COM_TEST", _plan((0x02500000, 2)), _plan((0x04000000, 2)),
+                             on_log=on_log, on_progress=on_progress)
+
+    detail = res.detail()
+    assert res.outcome == "success"
+    assert set(detail["phases"]) == {"connect", "transfer", "reboot", "contacts", "verify"}
+    assert all(v >= 0 for v in detail["phases"].values())
+    assert detail["totalSeconds"] >= detail["seconds"], "the total takes in the read-back too"
 
 
 def test_a_radio_that_will_not_answer_reads_is_unverifiable_not_broken(monkeypatch):

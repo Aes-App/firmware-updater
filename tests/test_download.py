@@ -180,6 +180,23 @@ def test_app_version_is_sent_in_query_and_user_agent(monkeypatch):
     try:
         download.fetch_catalog(base)
         assert "v=9.9.9" in seen["path"]
-        assert "9.9.9" in seen["ua"]
+        assert seen["ua"].startswith("AesApp-Radio-Updater/9.9.9 (")
     finally:
         srv.shutdown()
+
+
+def test_the_user_agent_names_the_os(monkeypatch):
+    monkeypatch.setattr(download, "APP_VERSION", "1.2.3")
+    monkeypatch.setattr(download.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(download.platform, "version", lambda: "10.0.22631")
+    monkeypatch.setattr(download.platform, "machine", lambda: "AMD64")
+    assert download._user_agent() == "AesApp-Radio-Updater/1.2.3 (Windows 10.0.22631; AMD64)"
+    monkeypatch.setattr(download.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(download.platform, "mac_ver", lambda: ("14.6.1", ("", "", ""), "arm64"))
+    monkeypatch.setattr(download.platform, "machine", lambda: "arm64")
+    assert download._user_agent() == "AesApp-Radio-Updater/1.2.3 (macOS 14.6.1; arm64)"
+
+    def boom():
+        raise OSError("no platform")
+    monkeypatch.setattr(download.platform, "system", boom)
+    assert download._user_agent() == "AesApp-Radio-Updater/1.2.3 (unknown)"

@@ -32,7 +32,6 @@ class LockLostError(CodeplugClientError):
 @dataclass
 class CodeplugJob:
     job_id: str
-    project_id: int
     project_uuid: str
     project_name: str
     model: str
@@ -60,7 +59,6 @@ class CodeplugSession:
         p = d.get("project") or {}
         self.job = CodeplugJob(
             job_id=str(d.get("jobId") or ""),
-            project_id=int(p.get("id") or 0),
             project_uuid=str(p.get("uuid") or ""),
             project_name=str(p.get("name") or "(unnamed)"),
             model=str(p.get("model") or ""),

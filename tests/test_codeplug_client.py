@@ -126,11 +126,11 @@ def _session(monkeypatch, *replies) -> tuple:
 def test_claim_reads_the_job_out_of_the_session(monkeypatch):
     sess, _ = _session(monkeypatch, (200, {
         "ok": True, "jobId": "abc123", "leaseSeconds": 600,
-        "project": {"id": 7, "uuid": "u", "name": "Home", "model": "anytone_d878uv2"},
+        "project": {"uuid": "0f0e0d0c-0b0a-4908-8706-050403020100", "name": "Home", "model": "anytone_d878uv2"},
         "stats": {"blocks": 5},
     }))
     job = sess.claim()
-    assert job.job_id == "abc123" and job.project_id == 7
+    assert job.job_id == "abc123" and job.project_uuid == "0f0e0d0c-0b0a-4908-8706-050403020100"
     assert job.model == "anytone_d878uv2" and job.lease_seconds == 600
 
 

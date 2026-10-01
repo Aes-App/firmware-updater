@@ -267,7 +267,9 @@ def test_the_filter_changes_what_is_drawn_and_not_what_is_ticked(tab):
 
 
 def test_a_bundle_for_another_radios_database_is_refused(tab, monkeypatch):
-    posted = []
+    posted, reports = [], []
+    monkeypatch.setattr(gt.catalog, "report_radio_op",
+                        lambda base, token, rec, **_k: reports.append(rec) or True)
     monkeypatch.setattr(gt.catalog, "download_artifact",
                         lambda *_a, **_k: (_ for _ in ()).throw(
                             AssertionError("must refuse before fetching anything")))
@@ -283,6 +285,8 @@ def test_a_bundle_for_another_radios_database_is_refused(tab, monkeypatch):
     kind, (msg, aborted) = posted[-1]
     assert kind == "write_err" and not aborted
     assert "anytone_878" in msg and "anytone_878uv" in msg and "nothing has been written" in msg
+    assert reports[-1]["outcome"] == "failed" and reports[-1]["error_stage"] == "prepare"
+    assert "contacts" not in reports[-1]["phases_ms"]
 
     posted.clear()
     monkeypatch.setattr(gt.catalog, "download_artifact",
@@ -306,6 +310,8 @@ def test_the_write_worker_builds_the_plan_here_instead_of_downloading(tab, monke
 
     monkeypatch.setattr(gt.engine, "write_contacts", fake_write)
     monkeypatch.setattr(gt.catalog, "download_artifact", no_download)
+    monkeypatch.setattr(gt.catalog, "report_radio_op",
+                        lambda *_a, **_k: pytest.fail("a list built on this computer is never reported"))
 
     _local(tab)
     store = _load(tab)
@@ -323,6 +329,29 @@ def test_the_write_worker_builds_the_plan_here_instead_of_downloading(tab, monke
     assert [(s.addr, s.data) for s in captured["plan"]] == [(s.addr, s.data) for s in want]
     assert "built on this computer" in tab.log.get("1.0", "end")
     assert "Done" in tab.wstatus.cget("text")
+
+
+def test_a_server_list_write_is_reported_to_the_server(tab, monkeypatch):
+    reports = []
+    plan = [seg.Segment(0x04000000, bytes(48))]
+    monkeypatch.setattr(gt.catalog, "download_artifact", lambda *_a, **_k: b"gz")
+    monkeypatch.setattr(gt.seg, "decode_gzip_container", lambda _gz: plan)
+    monkeypatch.setattr(gt.engine, "write_contacts",
+                        lambda *_a, **_k: {"blocks": 3, "frames": 4, "seconds": 1.0, "retries": 1})
+    monkeypatch.setattr(gt.catalog, "report_radio_op",
+                        lambda base, token, rec, **_k: reports.append((base, token, rec)) or True)
+
+    tab._write_worker("COM9", "https://cps.aes.app", "tok",
+                      {"format": "anytone_878uv", "list": "full", "sha256": "x", "recordCount": 1234},
+                      None, "D878UV", None, None)
+
+    base, token, rec = reports[-1]
+    assert (base, token) == ("https://cps.aes.app", "tok")
+    assert rec["op"] == "write" and rec["payload"] == "contacts" and rec["outcome"] == "success"
+    assert rec["verification"] == "na" and rec["error_stage"] is None and rec["error"] is None
+    assert rec["contacts"] == 1234 and rec["contacts_bytes"] == 48 and rec["frames"] == 4
+    assert rec["radio"] == "D878UV" and rec["radio_ident"].startswith("D878UV")
+    assert set(rec["phases_ms"]) == {"prepare", "contacts"} and rec["duration_ms"] >= 0
 
 
 def test_a_builder_refusal_reaches_the_operator_word_for_word(tab, monkeypatch):

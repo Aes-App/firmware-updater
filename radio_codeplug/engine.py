@@ -22,7 +22,8 @@ REOPEN_TIMEOUT_S = 60
 REOPEN_POLL_S = 1.0
 PROGRESS_EVERY_BLOCKS = 256
 HEARTBEAT_EVERY_S = 20.0
-VERIFY_REPORT_LIMIT = 8
+VERIFY_REPORT_LIMIT = 64
+REGION_REPORT_LIMIT = 128
 
 
 class CodeplugWriteError(ce.ContactWriteError):
@@ -35,23 +36,45 @@ class WriteResult:
     blocks_written: int = 0
     contact_blocks: int = 0
     seconds: float = 0.0
+    total_seconds: float = 0.0
+    phases: dict = field(default_factory=dict)
     retries: int = 0
     checked: int = 0
     mismatches: int = 0
     first_mismatches: list = field(default_factory=list)
+    regions: dict = field(default_factory=dict)
     message: str = ""
 
     def detail(self) -> dict:
+        worst = sorted(self.regions.items(), key=lambda kv: (-kv[1], kv[0]))[:REGION_REPORT_LIMIT]
         return {
             "blocks": self.blocks_written,
             "contactBlocks": self.contact_blocks,
             "seconds": round(self.seconds, 1),
+            "totalSeconds": round(self.total_seconds, 1),
+            "phases": {k: round(v, 2) for k, v in self.phases.items()},
             "retries": self.retries,
             "checked": self.checked,
             "mismatches": self.mismatches,
             "first": self.first_mismatches[:VERIFY_REPORT_LIMIT],
+            "regions": dict(sorted(worst)),
             "client": "desktop",
         }
+
+
+class _PhaseClock:
+
+    def __init__(self, into: dict, first: str):
+        self.into, self.phase, self.t = into, first, time.monotonic()
+
+    def next(self, phase: Optional[str]) -> None:
+        now = time.monotonic()
+        if self.phase is not None:
+            self.into[self.phase] = self.into.get(self.phase, 0.0) + (now - self.t)
+        self.phase, self.t = phase, now
+
+    def stop(self) -> None:
+        self.next(None)
 
 
 def _read_block(link: SerialLink, addr: int, length: int = READ_LL) -> bytes:
@@ -172,6 +195,7 @@ def write_codeplug(port_name: str,
 
     res = WriteResult(outcome="write_failed")
     t0 = time.monotonic()
+    clock = _PhaseClock(res.phases, "connect")
     beat = _Beat(on_phase)
     before = _port_names()
     link: Optional[SerialLink] = None
@@ -188,6 +212,7 @@ def write_codeplug(port_name: str,
                 f'this radio identifies as "{ident.model}" but the codeplug was built for '
                 f'{" / ".join(ident_tokens)} — WRONG RADIO. Nothing was written.')
         link.flush()
+        clock.next("transfer")
         on_log(f"writing the codeplug: {total:,} blocks ({seg.describe(code)})", "ok")
         res.retries += _write_all(link, code, total, on_progress, beat, "codeplug")
         res.blocks_written = total
@@ -200,7 +225,9 @@ def write_codeplug(port_name: str,
 
         if cont:
             ctotal = seg.block_count(cont)
+            clock.next("reboot")
             port_name = _wait_for_port(port_name, before, on_log, abort)
+            clock.next("contacts")
             link = _session(port_name, on_log, abort)
             ce._read_ident(link, on_log)
             link.flush()
@@ -218,7 +245,9 @@ def write_codeplug(port_name: str,
             res.message = "Written and committed (verify skipped)."
             return res
         try:
+            clock.next("reboot")
             port_name = _wait_for_port(port_name, before, on_log, abort)
+            clock.next("verify")
             link = _session(port_name, on_log, abort)
             ce._read_ident(link, on_log)
             link.flush()
@@ -270,7 +299,9 @@ def write_codeplug(port_name: str,
                 link.close()
             except BaseException:
                 pass
+        clock.stop()
         res.seconds = res.seconds or (time.monotonic() - t0)
+        res.total_seconds = time.monotonic() - t0
 
 
 def _model_matches(tokens, reported: str) -> bool:
@@ -326,6 +357,8 @@ def _verify(link: SerialLink, segments, total: int, on_progress, beat: _Beat,
         checked += 1
         if got != data:
             res.mismatches += 1
+            page = f"{addr & ~0xFFF:08x}"
+            res.regions[page] = res.regions.get(page, 0) + 1
             if len(res.first_mismatches) < VERIFY_REPORT_LIMIT:
                 res.first_mismatches.append({
                     "addr": f"{addr:08x}",
