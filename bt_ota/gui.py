@@ -17,7 +17,7 @@ from .client import MODELS, firmware_kind, make_client, scan_devices
 APP_TITLE = "AesApp Radio Updater"
 VENDOR = "AesApp Inc."
 WEBSITE = "https://aes.app/"
-VERSION = "0.9.5"
+VERSION = "1.0.0"
 LOG_PREFIX = "[aesapp]"
 
 try:
@@ -635,7 +635,7 @@ def _diag() -> int:
     from serial.tools import list_ports
     from radio_fw import engines, compiler, spec
     from radio_fw.gui_tab import _asset_path as _rf_asset
-    images = sorted({spec.image(k) for k in spec.KIND_FILESPEC} | {"Reset.png"})
+    images = sorted(spec.step_photos())
     missing = [img for img in images if not os.path.exists(_rf_asset(img))]
     if missing:
         print(f"DIAG FAIL: step images not found in the bundle: {missing}")
@@ -644,6 +644,9 @@ def _diag() -> int:
     from radio_fw.vendor import fwupd_cps
     assert fwupd_cps.MODELS["d878uv2"]["aprs"]["ident"] == "IA-BORD"
     assert "aprs" in engines.CPS_PROFILE
+    from radio_fw.vendor import fwupd_sct
+    assert fwupd_cps.MODELS["d578uv2"]["fw"]["ident"] == ("I578UV2A", "ID578UV2")
+    assert fwupd_sct.PROFILES["sct3258"].region_table[0x018000] == 0x0B
     from radio_contacts import catalog as _cc, engine as _ce, gui_tab as _cg, launch as _cl
     from radio_contacts import segments as _cs
     assert _ce.frame(0x07000000, bytes(range(16))).hex() == "570700000010000102030405060708090a0b0c0d0e0f" + "8f06"

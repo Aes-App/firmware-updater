@@ -508,6 +508,24 @@ IDENT_D890 = "494438393055560000563130300000" + "06"
 IDENT_D878 = "494438373855560000563130300000" + "06"
 IDENT_D878UV2 = "494438373855563200563130300000" + "06"
 IDENT_IABORD = "49412d424f52440000563230300000" + "06"
+IDENT_D168 = "494431363855560000563130300000" + "06"
+IDENT_578AT = "493537385556324100563130300000" + "06"
+IDENT_578GD = "494435373855563200563130300000" + "06"
+
+
+def _synth_multi_pkg(entries, spi_count=None, tag=None, tag2=None):
+    import struct
+    cdd, cdi = b"", b""
+    for i, (addr, payload) in enumerate(entries):
+        name = ("e%d.bin" % i).encode().ljust(0x100, b"\x00")
+        cdi += name + struct.pack("<IIII", addr, len(payload), len(cdd), 0x10000) + b"\x00" * 6
+        cdd += payload
+    count = len(entries) if spi_count is None else spi_count
+    spi = struct.pack("<IHII", 32, count, sum(len(p) for _a, p in entries[:count]), 0)
+    if tag is not None:
+        spi += (tag.encode().ljust(8) + b"V100" + (tag2 or tag).encode().ljust(8)
+                + b" " * 8 + b"V100" + b" " * 4 + b"\x00")
+    return cdd, cdi, spi
 
 
 def _synth_cps_pkg(base, payload):
@@ -720,6 +738,179 @@ def run_all():
         assert len(dev.frames) == 0
     check("aprs wrong-radio abort (ident gate)", t_aprs_wrong_radio)
 
+    def _run_quiet(kind, artifact, manifest, cap=None):
+        cap = cap or Cap()
+        engines.run(kind, "COM_FAKE", artifact, manifest,
+                    on_log=cap.on_log, on_progress=cap.on_progress)
+        return cap
+
+    def t_ident_from_spi_tag():
+        from radio_fw.vendor import fwupd_cps
+        for model, tag, ident in (("d578uv2", "578UV2A", "I578UV2A"), ("d578uv2", "D578UV2", "ID578UV2"),
+                                  ("d168", "D168UV", "ID168UV"), ("d890", "D890UV", "ID890UV"),
+                                  ("d878uv2", "D878UV2", "ID878UV2"), ("d878uv", "D878UV", "ID878UV")):
+            base = fwupd_cps.MODELS[model]["fw"]["base"]
+            cdd, cdi, spi = _synth_multi_pkg([(base, bytes(range(64)))], tag=tag)
+            _a, m = fwupd_cps.compile_update("fw", cdd, cdi, spi, model=model)
+            assert m["ident_reply_prefix_ascii"] == ident, (model, tag, m["ident_reply_prefix_ascii"])
+        cdd, cdi, spi = _synth_multi_pkg([(0x2000, bytes(64))], tag="A-BORD", tag2="A-BOARD")
+        _a, m = fwupd_cps.compile_update("aprs", cdd, cdi, spi, model="d878uv2")
+        assert m["ident_reply_prefix_ascii"] == "IA-BORD"
+        cdd, cdi, spi = _synth_multi_pkg([(0x08006000, bytes(64))], tag="D878UV2")
+        expect_raises(lambda: fwupd_cps.compile_update("fw", cdd, cdi, spi, model="d578uv2"),
+                      "wrong package for this radio")
+        expect_raises(lambda: fwupd_cps.compile_update("fw", cdd, cdi, None, model="d578uv2"),
+                      "needs the package's .spi")
+        cdd, cdi, spi = _synth_multi_pkg([(0x08006000, bytes(64))])
+        expect_raises(lambda: fwupd_cps.compile_update("fw", cdd, cdi, spi, model="d578uv2"),
+                      "only the package's .spi model tag says which")
+    check("bootloader ident = I + the .spi model tag", t_ident_from_spi_tag)
+
+    def t_whole_ident_gate():
+        from radio_fw.vendor import fwupd_cps
+        cdd, cdi, spi = _synth_multi_pkg([(0x08004000, bytes(range(64)))], tag="D878UV")
+        artifact, manifest = fwupd_cps.compile_update("fw", cdd, cdi, spi, model="d878uv")
+        dev = CpsDevice("fw", ident_hex=IDENT_D878UV2)
+        _install(None, dev)
+        expect_raises(lambda: _run_quiet("fw", artifact, manifest), "WRONG RADIO")
+        assert len(dev.frames) == 0, "no frames before the identity gate"
+        dev = CpsDevice("fw", ident_hex=IDENT_D878)
+        _install(None, dev)
+        _run_quiet("fw", artifact, manifest)
+        assert b"".join(dev.frames) == artifact
+    check("ident gate compares the whole model field", t_whole_ident_gate)
+
+    def t_578_at_vs_gd():
+        from radio_fw.vendor import fwupd_cps
+        payload = bytes((i * 13) & 0xFF for i in range(80))
+        cdd, cdi, spi = _synth_multi_pkg([(0x08006000, payload)], tag="578UV2A")
+        artifact, manifest = fwupd_cps.compile_update("fw", cdd, cdi, spi, model="d578uv2")
+        dev = CpsDevice("fw", ident_hex=IDENT_578GD)
+        _install(None, dev)
+        e = expect_raises(lambda: _run_quiet("fw", artifact, manifest), "WRONG RADIO")
+        assert "GD MCU" in str(e) and "D578UV2_GD" in str(e), str(e)
+        assert len(dev.frames) == 0
+        dev = CpsDevice("fw", ident_hex=IDENT_578AT, ack_finish=True)
+        _install(None, dev)
+        cap = _run_quiet("fw", artifact, manifest)
+        assert b"".join(dev.frames) == artifact and not dev.bad_checksum
+        assert [engines._read_u32le(f, 1) for f in dev.frames] == [0x08006000, 0x08006020, 0x08006040]
+        assert dev.finish_byte == 0x18 and cap.last_progress[2] == "done"
+    check("d578uv2 fw: the AT image refuses a GD radio, flashes an AT one", t_578_at_vs_gd)
+
+    def t_578_first_generation():
+        from radio_fw.vendor import fwupd_cps
+        for tag, ident in (("D578UVA", "ID578UVA"), ("D578UV", "ID578UV")):
+            cdd, cdi, spi = _synth_multi_pkg([(0x08006000, bytes(range(64)))], tag=tag)
+            _a, m = fwupd_cps.compile_update("fw", cdd, cdi, spi, model="d578uv")
+            assert m["ident_reply_prefix_ascii"] == ident, (tag, m["ident_reply_prefix_ascii"])
+            expect_raises(lambda: fwupd_cps.compile_update("fw", cdd, cdi, spi, model="d578uv2"),
+                          "wrong package for this radio")
+        cdd, cdi, spi = _synth_multi_pkg([(0x08006000, bytes(range(64)))], tag="D578UV2")
+        expect_raises(lambda: fwupd_cps.compile_update("fw", cdd, cdi, spi, model="d578uv"),
+                      "wrong package for this radio")
+        artifact, manifest = fwupd_cps.compile_update("fw", cdd, cdi, spi, model="d578uv2")
+        dev = CpsDevice("fw", ident_hex=b"ID578UV\x00\x00V100\x00\x00\x06".hex())
+        _install(None, dev)
+        e = expect_raises(lambda: _run_quiet("fw", artifact, manifest), "WRONG RADIO")
+        assert "first-generation D578UV" in str(e) and "D578UV_GD" in str(e), str(e)
+        assert len(dev.frames) == 0
+        cdd, cdi, spi = _synth_multi_pkg([(0x08006000, bytes(range(80)))], tag="D578UVA")
+        artifact, manifest = fwupd_cps.compile_update("fw", cdd, cdi, spi, model="d578uv")
+        dev = CpsDevice("fw", ident_hex=b"ID578UVA\x00V100\x00\x00\x06".hex())
+        _install(None, dev)
+        _run_quiet("fw", artifact, manifest)
+        assert b"".join(dev.frames) == artifact
+        expect_raises(lambda: fwupd_cps.compile_update("aprs", cdd, cdi, spi, model="d578uv"),
+                      "no 'aprs' target")
+    check("d578uv (gen 1): its own idents, kept apart from the D578UVII/III's", t_578_first_generation)
+
+    def t_168_two_regions():
+        from radio_fw.vendor import fwupd_cps
+        lo, hi = bytes(range(44)), bytes(range(100, 140))
+        cdd, cdi, spi = _synth_multi_pkg([(0x08004000, lo), (0x08020000, hi)], tag="D168UV")
+        artifact, manifest = fwupd_cps.compile_update("fw", cdd, cdi, spi, model="d168")
+        assert manifest["ident_reply_prefix_ascii"] == "ID168UV"
+        dev = CpsDevice("fw", ident_hex=IDENT_D168, ack_finish=True)
+        _install(None, dev)
+        _run_quiet("fw", artifact, manifest)
+        addrs = [engines._read_u32le(f, 1) for f in dev.frames]
+        assert addrs == [0x08004000, 0x08004020, 0x08020000, 0x08020020], [hex(a) for a in addrs]
+        assert dev.frames[1][5:37] == lo[32:] + bytes(20), "short tail zero-padded"
+        assert dev.frames[3][5:37] == hi[32:] + bytes(24), "short tail zero-padded"
+        assert not dev.bad_checksum
+        cdd, cdi, spi = _synth_multi_pkg([(0x08004000, lo), (0x08020000, hi), (0x08040000, hi)], tag="D168UV")
+        expect_raises(lambda: fwupd_cps.compile_update("fw", cdd, cdi, spi, model="d168"), "at most 2")
+    check("d168 fw: two regions, the gap skipped", t_168_two_regions)
+
+    def t_spi_entry_count():
+        import struct
+        from radio_fw.vendor import fwupd_cps
+        ents = [(0x00020000, bytes(range(64))), (0x00021000, bytes(range(64, 128))),
+                (0x00030000, bytes(range(128, 160)))]
+        cdd, cdi, spi = _synth_multi_pkg(ents, spi_count=2)
+        artifact, m = fwupd_cps.compile_update("icon", cdd, cdi, spi, model="d168")
+        assert [e["name"] for e in m["entries"]] == ["e0.bin", "e1.bin"]
+        assert m["skipped_entries"] == [{"name": "e2.bin", "addr": 0x00030000, "length": 32}]
+        assert m["frames"] == 4 and m["payload_bytes"] == 128
+        dev = CpsDevice("icon")
+        _install(None, dev)
+        cap = _run_quiet("icon", artifact, m)
+        assert b"".join(dev.frames) == artifact
+        assert any("e2.bin" in msg for _c, msg in cap.logs), "the left-out entry is logged"
+        bad = bytearray(spi)
+        struct.pack_into("<I", bad, 6, 100)
+        expect_raises(lambda: fwupd_cps.compile_update("icon", cdd, cdi, bytes(bad), model="d168"),
+                      "does not confirm")
+        expect_raises(lambda: fwupd_cps.compile_update("icon", cdd + b"\xff", cdi, spi, model="d168"),
+                      "do not match this .CDD")
+        cdd4, cdi4, spi4 = _synth_multi_pkg(ents, spi_count=4)
+        expect_raises(lambda: fwupd_cps.compile_update("icon", cdd4, cdi4, spi4, model="d168"),
+                      "declares 4 entries")
+        expect_raises(lambda: fwupd_cps.compile_update("icon", cdd, cdi, None, model="d168"),
+                      "needs the package's .spi")
+    check("icon: send the .spi's entries, log the rest", t_spi_entry_count)
+
+    def t_bt01_and_578_board():
+        from radio_fw.vendor import fwupd_cps
+        payload = bytes((i * 5) & 0xFF for i in range(70))
+        cdd, cdi, spi = _synth_multi_pkg([(0x08004000, payload)], tag="BT-MIC")
+        artifact, manifest = fwupd_cps.compile_update("fw", cdd, cdi, spi, model="bt01")
+        assert manifest["ident_reply_prefix_ascii"] == "IBT-MIC"
+        dev = CpsDevice("fw", ident_hex=IDENT_D878UV2)
+        _install(None, dev)
+        e = expect_raises(lambda: _run_quiet("fw", artifact, manifest), "WRONG RADIO")
+        assert "a D878UVII" in str(e) and "a BT01 microphone" in str(e), str(e)
+        assert len(dev.frames) == 0
+        dev = CpsDevice("fw", ident_hex=b"IBT-MIC\x00\x00V100\x00\x00\x06".hex())
+        _install(None, dev)
+        _run_quiet("fw", artifact, manifest)
+        assert b"".join(dev.frames) == artifact
+        expect_raises(lambda: fwupd_cps.compile_update("fw", cdd, cdi, spi, model="d878uv2"),
+                      "wrong package for this radio")
+        cdd, cdi, spi = _synth_multi_pkg([(0x2000, bytes(range(96)))], tag="A-BORD", tag2="A-BOARD")
+        a578, m578 = fwupd_cps.compile_update("aprs", cdd, cdi, spi, model="d578uv2")
+        a878, _m = fwupd_cps.compile_update("aprs", cdd, cdi, spi, model="d878uv2")
+        assert a578 == a878 and m578["ident_reply_prefix_ascii"] == "IA-BORD"
+    check("bt01 fw behind its ident; the d578 aprs board is the d878's", t_bt01_and_578_board)
+
+    def t_bt01_icons():
+        from radio_fw.vendor import fwupd_cps
+        ents = [(0x00000000, bytes(range(64))), (0x0000D800, bytes(range(64, 96)))]
+        cdd, cdi, spi = _synth_multi_pkg(ents)
+        artifact, m = fwupd_cps.compile_update("icon", cdd, cdi, spi, model="bt01")
+        assert m["addr_first"] == 0 and m["handshake_ascii"] == "PROGRAM" and m["frames"] == 3
+        dev = CpsDevice("icon")
+        _install(None, dev)
+        _run_quiet("icon", artifact, m)
+        assert b"".join(dev.frames) == artifact and dev.finish_byte == 0x18
+        expect_raises(lambda: fwupd_cps.compile_update("icon", cdd, cdi, spi, model="d578uv2"), "0x00020000")
+        radio = _synth_multi_pkg([(0x00020000, bytes(range(64)))])
+        expect_raises(lambda: fwupd_cps.compile_update("icon", *radio, model="bt01"), "0x00000000")
+        expect_raises(lambda: fwupd_cps.compile_update("icon", cdd, cdi, None, model="bt01"),
+                      "needs the package's .spi")
+    check("bt01 icons: from 0x0, kept apart from radio icons by address", t_bt01_icons)
+
     def t_sct_happy():
         cap = Cap()
         dev = SctDevice(SCT_MANIFEST)
@@ -729,9 +920,29 @@ def run_all():
         assert bytes(fake.tx) == SCT_ARTIFACT, "whole OUT stream must equal the artifact, in order"
         assert cap.last_progress == (10, 10, "done")
         assert fake.closes == 1
-        assert fake.signals[0] == (True, True), "SCT: DTR+RTS (see _run_sct)"
-        assert fake.stopbits == engines.serial.STOPBITS_ONE
+        assert fake.signals[0] == (False, False), "SCT: DTR and RTS low (see _run_sct)"
+        assert fake.stopbits == engines.serial.STOPBITS_TWO
+        assert fake.opens == [38400], fake.opens
     check("sct happy path", t_sct_happy)
+
+    def t_sct3258_defaults_and_kind():
+        m = {**SCT_MANIFEST, "kind": "sct3258_baseband"}
+        cap = Cap()
+        dev = SctDevice(m)
+        fake = _install(None, dev)
+        engines.run("sct", "COM_FAKE", SCT_ARTIFACT, m, on_log=cap.on_log, on_progress=cap.on_progress)
+        assert bytes(fake.tx) == SCT_ARTIFACT
+        assert fake.opens == [115200], fake.opens
+        assert fake.signals[0] == (False, False) and fake.stopbits == engines.serial.STOPBITS_TWO
+        assert any(msg.startswith("SCT3258") for _c, msg in cap.logs), cap.logs
+        dev = SctDevice(m)
+        fake = _install(None, dev)
+        engines.run("sct", "COM_FAKE", SCT_ARTIFACT, m, on_log=cap.on_log, on_progress=cap.on_progress,
+                    baud=9600)
+        assert fake.opens == [9600], fake.opens
+        expect_raises(lambda: engines.plan_sct(SCT_ARTIFACT, {**SCT_MANIFEST, "kind": "sct9999_baseband"}),
+                      "wrong component")
+    check("sct3258: its own default baud, chip name, kind gate", t_sct3258_defaults_and_kind)
 
     def t_sct_wrong_ack():
         cap = Cap()
@@ -941,6 +1152,35 @@ def run_all():
         assert 0x05C000 not in fwupd_sct.REGION_TABLE
         assert all(v & 1 for v in fwupd_sct.REGION_TABLE.values())
     check("sct region byte = (InitFlashTypeEnum << 1) | 1", t_sct_region_formula_matches_capture)
+
+    def t_sct3258_ladder():
+        p = fwupd_sct.PROFILES["sct3258"]
+        for addr, want in p.proven.items():
+            assert p.region_table[addr] == want, "%#08x: %#04x != %#04x" % (addr, p.region_table[addr], want)
+            derived = fwupd_sct.region_byte(fwupd_sct.SCT3258_SEGMENT_ERASE_TYPE[addr])
+            assert derived == want, "%#08x: formula %#04x != capture %#04x" % (addr, derived, want)
+        assert (p.region_table[0x039000], p.region_table[0x054000], p.region_table[0x062000]) == (0x05, 0x07, 0x1B)
+        q = fwupd_sct.PROFILES[fwupd_sct.DEFAULT_PROFILE]
+        assert q.chip == "SCT3288" and q.region_table == fwupd_sct.REGION_TABLE
+        assert set(p.region_table) & set(q.region_table) == {0x000100, 0x039000, 0x040000}
+        assert all(p.region_table[a] == q.region_table[a] for a in (0x000100, 0x039000, 0x040000))
+    check("sct3258 ladder: capture-proven bytes, shared bases agree", t_sct3258_ladder)
+
+    def t_sct_profile_decides():
+        def rec(addr):
+            return fwupd_sct.HexRecord(addr >> 16, addr & 0xFFFF, bytes(range(16)))
+        h3258 = [rec(0x000100), rec(0x018000)]
+        h3288 = [rec(0x000100), rec(0x022000)]
+        art, m = fwupd_sct.compile_stream(h3258, "sct3258")
+        assert m["kind"] == "sct3258_baseband" and m["chip"] == "SCT3258"
+        assert [s["region"] for s in m["segments"]] == [0x03, 0x0B]
+        assert engines.plan_sct(art, m)[0]["kind"] == "parity_disable"
+        expect_raises(lambda: fwupd_sct.compile_stream(h3258, "sct3288"), "SCT3288 erase ladder")
+        expect_raises(lambda: fwupd_sct.compile_stream(h3288, "sct3258"), "SCT3258 erase ladder")
+        _a, m = fwupd_sct.compile_stream(h3288)
+        assert m["kind"] == "sct3288_baseband" and [s["region"] for s in m["segments"]] == [0x03, 0x0B]
+        expect_raises(lambda: fwupd_sct.compile_stream(h3288, "sct9999"), "unknown SCT profile")
+    check("sct: the radio's chip picks the ladder", t_sct_profile_decides)
 
     def t_sct_pad_to_even():
         r3 = fwupd_sct.HexRecord(0, 0x0100, bytes(3))

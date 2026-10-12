@@ -4,6 +4,7 @@
 #
 # Branding assets are optional at build time; generate them with:
 #   ./.venv/bin/python make_assets.py "/path/to/AesApp-logo.jpg"
+import glob
 import os
 from PyInstaller.utils.hooks import collect_all
 
@@ -45,18 +46,20 @@ for pkg in ("bleak", "unicorn", "CoreBluetooth", "Foundation", "libdispatch", "o
 datas += [("bt_ota/libjl_ota_auth.so", "bt_ota")]
 # third-party notices (Apache-2.0 attribution for the JieLi lib + trademarks)
 datas += [("bt_ota/THIRD_PARTY_NOTICES.txt", "bt_ota")]
-# ship branding assets + the radio/boards step photos if present
-for _asset in ("aesapp_logo.png", "aesapp_logo_sm.png", "AesApp_icon.png",
-               "SCT3288.png", "NR.png", "ICON.png", "FW.png", "Reset.png"):
+# ship the branding assets if present
+for _asset in ("aesapp_logo.png", "aesapp_logo_sm.png", "AesApp_icon.png"):
     if os.path.exists(f"bt_ota/assets/{_asset}"):
         datas += [(f"bt_ota/assets/{_asset}", "bt_ota/assets")]
+# the Radio and Boards tab's step photos, the whole folder (the frozen
+# self-check fails a build that is missing one)
+datas += [(_photo, "radio_fw/assets") for _photo in sorted(glob.glob("radio_fw/assets/*.png"))]
 APP_ICON = "bt_ota/assets/AesApp.icns" if os.path.exists("bt_ota/assets/AesApp.icns") else None
 
 hiddenimports += ["bt_ota", "bt_ota.gui", "bt_ota.ota", "bt_ota.rcsp", "bt_ota.jl_auth",
                   "bt_ota.wiced", "bt_ota.client", "bt_ota._jl_e1", "bt_ota._jl_itab"]
 # radio/boards firmware tab (lazily imported in bt_ota.gui.main, so name it here)
 # + its vendored, stdlib-only precompilers, + pyserial's port enumerator.
-hiddenimports += ["radio_fw", "radio_fw.gui_tab", "radio_fw.layout", "radio_fw.engines", "radio_fw.compiler",
+hiddenimports += ["radio_fw", "radio_fw.gui_tab", "radio_fw.layout", "radio_fw.ports", "radio_fw.engines", "radio_fw.compiler",
                   "radio_fw.spec", "radio_fw.download", "radio_fw.vendor",
                   "radio_fw.vendor.fwupd_cps", "radio_fw.vendor.fwupd_nr",
                   "radio_fw.vendor.fwupd_sct", "serial.tools.list_ports",

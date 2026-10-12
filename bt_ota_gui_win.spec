@@ -5,6 +5,7 @@
 #
 # The .exe architecture matches the Python you build with. On Windows-on-ARM you
 # can build x64 (and x86) via emulation by installing an x64 (x86) Python.
+import glob
 import os
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
@@ -110,16 +111,18 @@ datas += [
     ("bt_ota/libjl_ota_auth.so", "bt_ota"),
     ("bt_ota/THIRD_PARTY_NOTICES.txt", "bt_ota"),
 ]
-for _asset in ("aesapp_logo.png", "aesapp_logo_sm.png", "AesApp_icon.png",
-               "SCT3288.png", "NR.png", "ICON.png", "FW.png", "Reset.png"):
+for _asset in ("aesapp_logo.png", "aesapp_logo_sm.png", "AesApp_icon.png"):
     if os.path.exists(f"bt_ota/assets/{_asset}"):
         datas += [(f"bt_ota/assets/{_asset}", "bt_ota/assets")]
+# the Radio and Boards tab's step photos, the whole folder (the frozen
+# self-check fails a build that is missing one)
+datas += [(_photo, "radio_fw/assets") for _photo in sorted(glob.glob("radio_fw/assets/*.png"))]
 hiddenimports += ["bt_ota", "bt_ota.gui", "bt_ota.ota", "bt_ota.rcsp",
                   "bt_ota.jl_auth", "bt_ota.wiced", "bt_ota.client",
                   "bt_ota._jl_e1", "bt_ota._jl_itab"]
 # radio/boards firmware tab (lazily imported in bt_ota.gui.main) + its vendored
 # stdlib-only precompilers + pyserial's Windows port enumerator.
-hiddenimports += ["radio_fw", "radio_fw.gui_tab", "radio_fw.layout", "radio_fw.engines", "radio_fw.compiler",
+hiddenimports += ["radio_fw", "radio_fw.gui_tab", "radio_fw.layout", "radio_fw.ports", "radio_fw.engines", "radio_fw.compiler",
                   "radio_fw.spec", "radio_fw.download", "radio_fw.vendor",
                   "radio_fw.vendor.fwupd_cps", "radio_fw.vendor.fwupd_nr",
                   "radio_fw.vendor.fwupd_sct", "serial.tools.list_ports",

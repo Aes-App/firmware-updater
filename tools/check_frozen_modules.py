@@ -49,6 +49,7 @@ REQUIRED = [
     "radio_codeplug.engine",
     "radio_fw.gui_tab",
     "radio_fw.layout",
+    "radio_fw.ports",
     "radio_fw.engines",
     "radio_fw.compiler",
     "radio_fw.download",

@@ -144,9 +144,7 @@ def test_long_labels_wrap_to_the_window_not_to_a_fixed_width():
     root, tab = _window(800, width=1200)
     try:
         _settle(root)
-        banner = next(w for w in tab.setup.master.pack_slaves()
-                      if isinstance(w, ttk.Label) and "NOT codeplugs" in str(w.cget("text")))
-        assert int(float(str(banner.cget("wraplength")))) > 1000
+        assert int(float(str(tab.server_status.cget("wraplength")))) > 1000
     finally:
         root.destroy()
 
@@ -251,3 +249,187 @@ def test_the_log_gives_way_faster_than_the_country_tree():
         root.destroy()
     assert tree_lost <= tree_natural * 0.2, "the tree lost more than a fifth of its height"
     assert log_lost >= 2 * max(tree_lost, 1), "the log should give way well before the tree does"
+
+
+def test_the_baseband_baud_choices_follow_the_chip():
+    root, tab = _window(800)
+    try:
+        def show(kind):
+            tab.plan = [types.SimpleNamespace(kind=spec.KIND_SCT, manifest={"kind": kind})]
+            tab.results = [{"kind": spec.KIND_SCT, "label": "", "state": "pending"}]
+            tab.step = 0
+            tab.setup.pack_forget()
+            tab.wizard.pack(fill="both", expand=True)
+            tab._show_step()
+            tab._on_ready()
+            return list(tab._sct_baud_box.cget("values")), tab._sct_baud.get()
+
+        assert show("sct3288_baseband") == (["38400", "115200"], "38400")
+        tab._sct_baud.set("115200")
+        assert show("sct3288_baseband")[1] == "115200", "a retry keeps the operator's pick"
+        assert show("sct3258_baseband") == (["115200", "9600"], "115200")
+        assert show("sct3288_baseband") == (["38400", "115200"], "38400"), "another chip starts at its default"
+    finally:
+        root.destroy()
+
+
+def test_the_bt01_asks_for_no_codeplug_backup(monkeypatch):
+    from radio_fw import gui_tab
+    root, tab = _window(800)
+    try:
+        asked = []
+        monkeypatch.setattr(gui_tab.messagebox, "askyesno", lambda *a, **k: asked.append(a) or True)
+        tab.model = "bt01"
+        tab.plan = [types.SimpleNamespace(kind=spec.KIND_FW)]
+        tab._begin_radio()
+        assert asked == [], "no backup question for the BT01"
+        tab.results = [{"kind": spec.KIND_FW, "label": "", "state": "done"}]
+        tab.step = 1
+        tab._finish_radio()
+        _settle(root)
+        assert not tab.mcu_box.winfo_ismapped(), "no MCU reset for the BT01"
+        tab.model = "d578uv2"
+        tab.plan = [types.SimpleNamespace(kind=spec.KIND_FW)]
+        tab._begin_radio()
+        assert len(asked) == 1, "a radio still asks"
+    finally:
+        root.destroy()
+
+
+def test_an_untested_model_warns_while_selected_and_before_a_batch(monkeypatch):
+    from radio_fw import gui_tab
+    root, tab = _window(800)
+    try:
+        _settle(root)
+        assert not tab.untested_lbl.winfo_ismapped(), "no warning for a tested radio"
+        tab.model_var.set("d578uv")
+        tab._on_model_change()
+        _settle(root)
+        assert tab.untested_lbl.winfo_ismapped()
+        assert "not been tested on a real radio" in tab.untested_lbl.cget("text")
+
+        asked = []
+        answers = iter([False])
+        monkeypatch.setattr(gui_tab.messagebox, "askyesno",
+                            lambda title, *a, **k: asked.append(title) or next(answers))
+        tab.plan = [types.SimpleNamespace(kind=spec.KIND_FW)]
+        tab._begin_radio()
+        assert asked == ["Not tested on real hardware"], asked
+        assert not tab.wizard.winfo_ismapped(), "declining stops before the walk"
+
+        answers = iter([True, True])
+        asked.clear()
+        tab._begin_radio()
+        assert asked == ["Not tested on real hardware", "Back up your codeplug first"], asked
+
+        tab._lock_model(False)
+        tab.model_var.set("d578uv2")
+        tab._on_model_change()
+        _settle(root)
+        assert not tab.untested_lbl.winfo_ismapped(), "the D578UVII/III is tested"
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize("width", [980, 760, 640])
+def test_the_model_buttons_wrap_rather_than_leave_the_window(width):
+    root, tab = _window(700, width=width, server=False)
+    try:
+        _settle(root)
+        for rb in tab._model_btns:
+            assert rb.winfo_ismapped(), rb.cget("text")
+            assert rb.winfo_rootx() + rb.winfo_width() <= root.winfo_rootx() + root.winfo_width(), \
+                (width, rb.cget("text"))
+            cx = rb.winfo_rootx() + rb.winfo_width() // 2
+            cy = rb.winfo_rooty() + rb.winfo_height() // 2
+            hit = root.winfo_containing(cx, cy)
+            assert hit is not None and str(hit).startswith(str(rb)), (rb.cget("text"), hit)
+        lines = {rb.winfo_rooty() for rb in tab._model_btns}
+        assert (len(lines) == 1) == (width >= 820), (width, len(lines))
+    finally:
+        root.destroy()
+
+
+def test_the_port_list_puts_the_selected_radios_chip_first(monkeypatch):
+    from radio_fw import gui_tab
+    from test_ports import LISTED, AT, GD
+    monkeypatch.setattr(gui_tab.list_ports, "comports", lambda: list(LISTED))
+    root, tab = _window(800)
+    try:
+        tab.model = "d168"
+        tab._refresh_ports()
+        values = list(tab.port_box.cget("values"))
+        assert values[0].startswith(AT.device), values
+        assert tab._port_map[tab.port_var.get()] == AT.device, "the AT32 port is preselected"
+        tab.model = "d878uv2"
+        tab._last_port = None
+        tab._refresh_ports()
+        assert tab._port_map[tab.port_var.get()] == GD.device
+    finally:
+        root.destroy()
+
+
+def test_a_d578_firmware_for_the_other_mcu_is_refused(monkeypatch):
+    from radio_fw import gui_tab
+    from test_ports import LISTED, AT, GD
+    monkeypatch.setattr(gui_tab.list_ports, "comports", lambda: list(LISTED))
+    root, tab = _window(800)
+    started = []
+    monkeypatch.setattr(gui_tab.threading, "Thread",
+                        lambda *a, **k: types.SimpleNamespace(start=lambda: started.append(k.get("args"))))
+    try:
+        errors = []
+        monkeypatch.setattr(gui_tab.messagebox, "showerror", lambda *a, **k: errors.append(a[1]))
+        monkeypatch.setattr(gui_tab.messagebox, "askyesno",
+                            lambda *a, **k: pytest.fail("a refusal must not be a question"))
+        tab.model = "d578uv2"
+        tab._refresh_ports()
+        label = {tab._port_map[lb]: lb for lb in tab._port_map}
+
+        def connect(ident, device, kind=spec.KIND_FW):
+            tab.plan = [types.SimpleNamespace(kind=kind, artifact=b"",
+                                              manifest={"ident_reply_prefix_ascii": ident})]
+            tab.step = 0
+            tab.results = [{"kind": kind, "label": "", "state": "pending"}]
+            tab.port_var.set(label[device])
+            tab._on_connect()
+
+        connect("I578UV2A", GD.device)
+        assert len(errors) == 1 and "needs the GD build" in errors[0] and not started
+        assert tab.results[0]["state"] == "pending", "a refused step is not marked as writing"
+        connect("ID578UV2", AT.device)
+        assert len(errors) == 2 and "needs the AT build" in errors[1] and not started
+        connect("I578UV2A", AT.device)
+        assert len(errors) == 2 and len(started) == 1, "the matching port connects"
+        tab._writing = False
+        connect("I578UV2A", GD.device, kind=spec.KIND_ICON)
+        assert len(errors) == 2 and len(started) == 2, "only the firmware step is MCU-specific"
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize("model", ["d168", "d578uv2", "bt01"])
+@pytest.mark.parametrize("height", [800, 640])
+def test_each_radios_own_photos_load_and_leave_the_buttons_on_screen(model, height):
+    root, tab = _window(height, server=False)
+    try:
+        tab.model = model
+        kinds = spec.model_order(model)
+        tab.plan = [types.SimpleNamespace(kind=k) for k in kinds]
+        tab.results = [{"kind": k, "label": spec.label(k, model), "state": "done"} for k in kinds]
+        tab.setup.pack_forget()
+        tab.wizard.pack(fill="both", expand=True)
+        for i, kind in enumerate(kinds):
+            tab.step = i
+            tab._show_step()
+            tab._on_ready()
+            assert tab._step_img is not None, (model, kind)
+            assert _visible(root, tab.connect_btn), (model, kind, height)
+        tab.step = len(kinds)
+        tab._finish_radio()
+        _settle(root)
+        if spec.mcu_reset(model):
+            assert tab._mcu_img is not None, model
+        assert _visible(root, tab._again_frame.winfo_children()[0]), (model, height)
+    finally:
+        root.destroy()

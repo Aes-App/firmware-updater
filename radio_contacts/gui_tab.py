@@ -10,6 +10,7 @@ from typing import Optional
 
 from serial.tools import list_ports
 
+from radio_fw import ports as radio_ports
 from radio_fw.engines import AbortedError
 from radio_fw.layout import follow_width
 
@@ -556,9 +557,8 @@ class ContactRefreshTab:
     def _refresh_ports(self):
         labels = []
         self._port_map = {}
-        for p in list_ports.comports():
-            desc = (p.description or "").strip()
-            label = p.device + ("  —  " + desc if desc and desc != "n/a" else "")
+        for p in radio_ports.ordered(list_ports.comports()):
+            label = radio_ports.label(p)
             labels.append(label)
             self._port_map[label] = p.device
         self.port_box["values"] = labels

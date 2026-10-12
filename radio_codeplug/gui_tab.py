@@ -9,6 +9,7 @@ from typing import Optional
 
 from serial.tools import list_ports
 
+from radio_fw import ports as radio_ports
 from radio_fw.engines import AbortedError
 from radio_contacts import catalog as _cat
 from radio_contacts import engine as ce
@@ -187,12 +188,11 @@ class CodeplugWriteTab:
         self.log.configure(state="disabled")
 
     def _refresh_ports(self):
-        ports = list(list_ports.comports())
+        ports = radio_ports.ordered(list_ports.comports())
         labels = []
         self._port_map = {}
         for p in ports:
-            desc = (p.description or "").strip()
-            label = p.device + ("  —  " + desc if desc and desc != "n/a" else "")
+            label = radio_ports.label(p)
             labels.append(label)
             self._port_map[label] = p.device
         self.port_box["values"] = labels

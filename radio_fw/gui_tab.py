@@ -14,6 +14,7 @@ from serial.tools import list_ports
 
 from . import compiler, download, engines, spec
 from .layout import follow_width as _follow_width
+from . import ports as _ports
 
 _LOG_TAGS = {"tx": "#0b5fff", "rx": "#7a3fb0", "ok": "#127a2e", "er": "#b00020", "error": "#b00020"}
 
@@ -23,12 +24,11 @@ def _asset_path(name: str) -> str:
     for base in (here, getattr(sys, "_MEIPASS", None)):
         if not base:
             continue
-        for cand in (os.path.join(base, "bt_ota", "assets", name),
-                     os.path.join(base, "radio_fw", "assets", name),
+        for cand in (os.path.join(base, "radio_fw", "assets", name),
                      os.path.join(base, "assets", name)):
             if os.path.exists(cand):
                 return cand
-    return os.path.join(here, "bt_ota", "assets", name)
+    return os.path.join(here, "radio_fw", "assets", name)
 
 
 _STEP_BASE_W = 380
@@ -115,7 +115,7 @@ class _Row:
         self.cb.grid(row=0, column=0, sticky="w")
         self.cb.state(["disabled"])
 
-        ttk.Label(frame, text=str(index) + ". " + spec.label(kind), width=20).grid(row=0, column=1, sticky="w")
+        ttk.Label(frame, text=str(index) + ". " + spec.label(kind, tab.model), width=20).grid(row=0, column=1, sticky="w")
 
         if spec.is_multi(kind):
             btn_text = "Choose .spi file…"
@@ -144,14 +144,14 @@ class _Row:
         patterns = " ".join("*." + e for e in exts)
         if multi:
             types = [("Update package (.spi)", "*.spi"),
-                     (spec.label(self.kind) + " files (." + " .".join(e.upper() for e in exts) + ")", patterns),
+                     (spec.label(self.kind, self.tab.model) + " files (." + " .".join(e.upper() for e in exts) + ")", patterns),
                      ("All files", "*.*")]
             title = ("Select the .spi file — the .CDD and .CDI load automatically from the same "
                      "folder (or Shift-select the .CDD and .CDI yourself)")
             picked = list(filedialog.askopenfilenames(title=title, filetypes=types))
         else:
-            types = [(spec.label(self.kind) + " files", patterns), ("All files", "*.*")]
-            p = filedialog.askopenfilename(title="Choose the " + spec.label(self.kind) + " file",
+            types = [(spec.label(self.kind, self.tab.model) + " files", patterns), ("All files", "*.*")]
+            p = filedialog.askopenfilename(title="Choose the " + spec.label(self.kind, self.tab.model) + " file",
                                            filetypes=types)
             picked = [p] if p else []
         if not picked:
@@ -212,10 +212,15 @@ class _Row:
         if res is not None:
             names = ", ".join(res.source_names)
             sha = (res.sha256 or "")[:10]
+            skipped = res.manifest.get("skipped_entries") or []
+            chip = spec.fw_chip(res.manifest) if self.kind == spec.KIND_FW else None
             self.status.configure(
                 text="✓ " + names + " — " + format(res.frames, ",") + " frames, "
                      + format(res.payload_bytes, ",") + " payload bytes"
-                     + (" · sha " + sha if sha else ""),
+                     + (" · sha " + sha if sha else "")
+                     + (" · for the " + chip + " MCU" if chip else "")
+                     + (" · leaves out " + ", ".join(str(e.get("name", "?")) for e in skipped)
+                        + " (not counted in the .spi, as the factory CPS does)" if skipped else ""),
                 foreground="#127a2e")
             self.checked.set(True)
             self.cb.state(["!disabled"])
@@ -365,6 +370,7 @@ class RadioBoardsTab:
         if self._writing:
             return
         self.model = self.model_var.get()
+        self._show_untested()
         self._build_rows()
         self.confirm.set(False)
         if self.source_var.get() == "server":
@@ -512,7 +518,7 @@ class RadioBoardsTab:
             r._gen += 1
             r.begin_download()
             threading.Thread(target=self._fetch_worker,
-                             args=(r, comp, r._gen, token), daemon=True).start()
+                             args=(r, comp, r._gen, token, self.model), daemon=True).start()
             started += 1
         self._dl_pending = started
         if started == 0:
@@ -536,14 +542,15 @@ class RadioBoardsTab:
                 text=str(ok) + " target(s) downloaded and checksum-verified. Tick the ones to write, "
                      "then agree and Start.", foreground="#127a2e")
 
-    def _fetch_worker(self, row, comp, gen, token):
+    def _fetch_worker(self, row, comp, gen, token, model):
         try:
             res = download.download_component(
                 comp,
                 on_progress=lambda got, total: self._post("dl_progress", (row, gen, got, total)),
                 on_status=lambda m: self._post("dl_status", (row, gen, m)))
+            res = compiler.check_downloaded(res, model)
             self._post("compiled", (row, res, None, gen))
-        except download.DownloadError as e:
+        except (download.DownloadError, compiler.CompileError) as e:
             self._post("compiled", (row, None, str(e), gen))
         except Exception as e:
             self._post("compiled", (row, None, str(e), gen))
@@ -556,13 +563,20 @@ class RadioBoardsTab:
 
         model_row = ttk.Frame(outer)
         model_row.pack(fill="x", pady=(0, 6))
-        ttk.Label(model_row, text="Radio model:", font=("", 11, "bold")).pack(side="left")
+        ttk.Label(model_row, text="Radio model:", font=("", 11, "bold")).grid(row=0, column=0, sticky="nw")
         self._model_btns = []
         for m in spec.MODEL_ORDER:
             rb = ttk.Radiobutton(model_row, text=spec.model_label(m), value=m,
                                  variable=self.model_var, command=self._on_model_change)
-            rb.pack(side="left", padx=(8, 0))
             self._model_btns.append(rb)
+        self._model_row = model_row
+        self._model_layout = None
+        self._flow_model_buttons()
+        model_row.bind("<Configure>", self._flow_model_buttons, add="+")
+
+        self.untested_lbl = ttk.Label(outer, text="", foreground="#b00020", justify="left")
+        _follow_width(self.untested_lbl, outer)
+        self._show_untested()
 
         src_row = self.src_row = ttk.Frame(outer)
         src_row.pack(fill="x", pady=(0, 4))
@@ -596,16 +610,6 @@ class RadioBoardsTab:
                                        wraplength=620, justify="left")
         self.server_status.grid(row=1, column=0, columnspan=5, sticky="w", pady=(2, 0))
         _follow_width(self.server_status, self.server_row, reserve=8)
-
-        banner = ttk.Label(
-            outer, justify="left", foreground="#7a1020", wraplength=640,
-            text=("These are NOT codeplugs. They replace the radio's main firmware, its baseband DSP, "
-                  "its NR/APRS daughterboard, or its icon/font flash. Nothing here is verified or read "
-                  "back — an interrupted write can leave a radio that will not boot. Keep the radio "
-                  "powered and the cable in for the whole update, and only load files built for your "
-                  "exact model."))
-        banner.pack(fill="x", pady=(0, 8))
-        _follow_width(banner, outer, reserve=8)
 
         self.setup = ttk.Frame(outer)
         self.setup.pack(fill="x")
@@ -669,8 +673,9 @@ class RadioBoardsTab:
         ttk.Button(self.port_row, text="Refresh", command=self._refresh_ports).grid(row=0, column=2)
         self.sct_baud_row = ttk.Frame(self.port_row)
         ttk.Label(self.sct_baud_row, text="baud:").pack(side="left")
-        ttk.Combobox(self.sct_baud_row, textvariable=self._sct_baud, state="readonly", width=8,
-                     values=[str(engines.SCT_BAUD), str(engines.SCT_ALT_BAUD)]).pack(side="left", padx=(4, 0))
+        self._sct_baud_box = ttk.Combobox(self.sct_baud_row, textvariable=self._sct_baud, state="readonly",
+                                          width=8, values=[str(engines.SCT_BAUD), str(engines.SCT_ALT_BAUD)])
+        self._sct_baud_box.pack(side="left", padx=(4, 0))
         self.connect_btn = ttk.Button(self.port_row, text="Connect && Write", command=self._on_connect)
         self.connect_btn.grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
@@ -695,8 +700,8 @@ class RadioBoardsTab:
         self.mcu_box = ttk.LabelFrame(self.done, text="Reset the MCU now (Radio Firmware was written)")
         _mcu_body = self._mcu_body = ttk.Frame(self.mcu_box)
         _mcu_body.pack(fill="x", padx=8, pady=6)
-        self._mcu_natural = _load_step_image("Reset.png")
-        self._mcu_src = _load_step_source("Reset.png")
+        self._mcu_natural = _load_step_image(spec.reset_image(spec.DEFAULT_MODEL))
+        self._mcu_src = _load_step_source(spec.reset_image(spec.DEFAULT_MODEL))
         self._mcu_img = self._mcu_natural
         self._mcu_label = ttk.Label(_mcu_body, image=self._mcu_img if self._mcu_img else "")
         self._mcu_label.pack(side="left", anchor="n", padx=(0, 12))
@@ -737,8 +742,51 @@ class RadioBoardsTab:
             return
         self._begin_radio()
 
+    def _flow_model_buttons(self, _event=None):
+        try:
+            width = self._model_row.winfo_width()
+        except tk.TclError:
+            return
+        if width <= 1:
+            width = 10 ** 6
+        label = self._model_row.grid_slaves(row=0, column=0)
+        avail = width - (label[0].winfo_reqwidth() if label else 0)
+        layout, line, x = [], 0, 0
+        for rb in self._model_btns:
+            w = rb.winfo_reqwidth() + 8
+            if x and x + w > avail:
+                line, x = line + 1, 0
+            layout.append(line)
+            x += w
+        if layout == self._model_layout:
+            return
+        self._model_layout = layout
+        lines = getattr(self, "_model_lines", [])
+        while len(lines) <= max(layout):
+            frame = ttk.Frame(self._model_row)
+            frame.grid(row=len(lines), column=1, sticky="w")
+            lines.append(frame)
+        self._model_lines = lines
+        for rb in self._model_btns:
+            rb.pack_forget()
+        for rb, n in zip(self._model_btns, layout):
+            rb.pack(in_=lines[n], side="left", padx=(8, 0))
+            rb.lift(lines[n])
+
+    def _show_untested(self):
+        if spec.is_untested(self.model):
+            self.untested_lbl.configure(text="⚠ " + spec.untested_warning(self.model))
+            self.untested_lbl.pack(fill="x", pady=(0, 6), after=self._model_row)
+        else:
+            self.untested_lbl.pack_forget()
+
     def _begin_radio(self):
-        if self._plan_has_fw():
+        if spec.is_untested(self.model) and not messagebox.askyesno(
+                "Not tested on real hardware",
+                spec.untested_warning(self.model) + "\n\nContinue anyway?",
+                icon=messagebox.WARNING):
+            return
+        if self._plan_has_fw() and spec.has_codeplug(self.model):
             if not messagebox.askyesno(
                     "Back up your codeplug first",
                     "This batch writes the Radio Firmware, which can reset the radio's settings.\n\n"
@@ -747,7 +795,7 @@ class RadioBoardsTab:
                 return
         self._lock_model(True)
         self.step = 0
-        self.results = [{"kind": p.kind, "label": spec.label(p.kind), "state": "pending"} for p in self.plan]
+        self.results = [{"kind": p.kind, "label": spec.label(p.kind, self.model), "state": "pending"} for p in self.plan]
         self._clear_log()
         self.setup.pack_forget()
         self.done.pack_forget()
@@ -760,14 +808,15 @@ class RadioBoardsTab:
             return
         comp = self.plan[self.step]
         kind = comp.kind
-        self.wtitle.configure(text=spec.label(kind))
+        self.wtitle.configure(text=spec.label(kind, self.model))
         self.wcount.configure(text="step " + str(self.step + 1) + " of " + str(len(self.plan)))
         instr = spec.entry_instructions(self.model, kind)
-        if kind in spec.UNCONFIRMED:
+        if spec.is_unconfirmed(self.model, kind):
             instr = "⚠ Entry combo not yet confirmed — verify before continuing.\n\n" + instr
         self.winstr.configure(text=instr)
-        self._step_natural = _load_step_image(spec.image(kind))
-        self._step_src = _load_step_source(spec.image(kind))
+        photo = spec.step_image(self.model, kind)
+        self._step_natural = _load_step_image(photo) if photo else None
+        self._step_src = _load_step_source(photo) if photo else None
         self._step_img = self._step_natural
         self.wimage.configure(image=self._step_img if self._step_img else "")
 
@@ -835,6 +884,13 @@ class RadioBoardsTab:
         self.ready_btn.pack_forget()
         self._refresh_ports()
         if self.plan[self.step].kind == spec.KIND_SCT:
+            manifest = getattr(self.plan[self.step], "manifest", None) or {}
+            chip, default_baud, alt_baud = engines.SCT_CHIPS.get(
+                manifest.get("kind"), ("", engines.SCT_BAUD, engines.SCT_ALT_BAUD))
+            self._sct_baud_box.configure(values=[str(default_baud), str(alt_baud)])
+            if chip != getattr(self, "_sct_baud_chip", None):
+                self._sct_baud.set(str(default_baud))
+                self._sct_baud_chip = chip
             self.sct_baud_row.grid(row=1, column=1, sticky="w", pady=(4, 0))
         else:
             self.sct_baud_row.grid_forget()
@@ -842,14 +898,15 @@ class RadioBoardsTab:
         self._schedule_fit()
 
     def _refresh_ports(self):
-        ports = list(list_ports.comports())
+        ports = _ports.ordered(list_ports.comports(), spec.usb_chips(self.model))
         labels = []
         self._port_map = {}
+        self._port_chips = {}
         for p in ports:
-            desc = (p.description or "").strip()
-            label = p.device + ("  —  " + desc if desc and desc != "n/a" else "")
+            label = _ports.label(p)
             labels.append(label)
             self._port_map[label] = p.device
+            self._port_chips[label] = _ports.chip_of(p)
         self.port_box["values"] = labels
         if labels:
             pick = 0
@@ -868,8 +925,15 @@ class RadioBoardsTab:
         if not port:
             messagebox.showwarning("No COM port", "Pick the radio's COM port. Click Refresh if it isn't listed.")
             return
-        self._last_port = port
         comp = self.plan[self.step]
+        if comp.kind == spec.KIND_FW:
+            port_chip = getattr(self, "_port_chips", {}).get(label)
+            refusal = spec.fw_port_mismatch(self.model, getattr(comp, "manifest", None), port_chip, port)
+            if refusal:
+                self._log("Refused: " + refusal.split("\n\n")[0], "er")
+                messagebox.showerror("Firmware for the other MCU", refusal)
+                return
+        self._last_port = port
         self.results[self.step]["state"] = "writing"
 
         sct_baud = None
@@ -913,10 +977,10 @@ class RadioBoardsTab:
         self.results[self.step]["state"] = "done"
         self.progress["value"] = 100
         self.wstatus.configure(
-            text=spec.label(self.plan[self.step].kind) + " written. Nothing is read back — the result is "
+            text=spec.label(self.plan[self.step].kind, self.model) + " written. Nothing is read back — the result is "
                  "only visible when the radio boots.", foreground="#127a2e")
         self.abort_btn.pack_forget()
-        nxt = "Next: " + spec.label(self.plan[self.step + 1].kind) if self.step + 1 < len(self.plan) \
+        nxt = "Next: " + spec.label(self.plan[self.step + 1].kind, self.model) if self.step + 1 < len(self.plan) \
             else "Finish this radio"
         self.next_btn.configure(text=nxt)
         self.next_btn.pack(anchor="w", pady=(6, 0), before=self.log_lbl)
@@ -966,8 +1030,13 @@ class RadioBoardsTab:
                      "skipped": "#666"}.get(r["state"], "#444")
             ttk.Label(self.done_summary, text=r["label"] + " — " + r["state"], foreground=color).pack(anchor="w")
         fw_done = any(r["kind"] == spec.KIND_FW and r["state"] == "done" for r in self.results)
-        if fw_done:
+        if fw_done and spec.mcu_reset(self.model):
             self.mcu_reset_lbl.configure(text=spec.mcu_reset(self.model))
+            photo = spec.reset_image(self.model)
+            self._mcu_natural = _load_step_image(photo) if photo else None
+            self._mcu_src = _load_step_source(photo) if photo else None
+            self._mcu_img = self._mcu_natural
+            self._mcu_label.configure(image=self._mcu_img if self._mcu_img else "")
             self.mcu_box.pack(fill="x", pady=(4, 8), after=self.done_summary)
         else:
             self.mcu_box.pack_forget()
@@ -986,7 +1055,7 @@ class RadioBoardsTab:
         self.setup.pack(fill="x")
 
     def _log(self, msg, cls="info"):
-        step = (spec.label(self.plan[self.step].kind)
+        step = (spec.label(self.plan[self.step].kind, self.model)
                 if self.plan and 0 <= self.step < len(self.plan) else "—")
         line = "[" + time.strftime("%H:%M:%S") + "] [" + spec.model_label(self.model) + "] [" + step + "] " + msg
         self.log.configure(state="normal")

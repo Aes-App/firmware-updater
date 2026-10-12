@@ -58,6 +58,53 @@ CAPTURE_PROVEN_REGIONS: Dict[int, int] = {
     0x077000: 0x1F,
 }
 
+SCT3258_SEGMENT_ERASE_TYPE: Dict[int, int] = {
+    0x000100: ERASE_USER_FLASH_WITH_VOCODE,
+    0x018000: ERASE_VOCODE1,
+    0x02C000: ERASE_VOCODE4,
+    0x039000: ERASE_SYSTEM_FLASH,
+    0x040000: ERASE_VOCODE2,
+    0x051000: ERASE_VOCODE6,
+    0x054000: ERASE_VOCODE3,
+    0x062000: ERASE_VOCODE7,
+    0x068000: ERASE_VOCODE5,
+}
+
+SCT3258_CAPTURE_PROVEN_REGIONS: Dict[int, int] = {
+    0x000100: 0x03,
+    0x018000: 0x0B,
+    0x02C000: 0x15,
+    0x040000: 0x0D,
+    0x051000: 0x19,
+    0x068000: 0x1F,
+}
+
+
+class SctProfile(NamedTuple):
+    name: str
+    chip: str
+    kind: str
+    region_table: Dict[int, int]
+    ladder_bases: frozenset
+    proven: Dict[int, int]
+
+
+PROFILES: Dict[str, SctProfile] = {
+    "sct3288": SctProfile("sct3288", "SCT3288", "sct3288_baseband",
+                          REGION_TABLE, VENDOR_LADDER_BASES, CAPTURE_PROVEN_REGIONS),
+    "sct3258": SctProfile("sct3258", "SCT3258", "sct3258_baseband",
+                          {a: region_byte(t) for a, t in SCT3258_SEGMENT_ERASE_TYPE.items()},
+                          frozenset(SCT3258_SEGMENT_ERASE_TYPE),
+                          SCT3258_CAPTURE_PROVEN_REGIONS),
+}
+DEFAULT_PROFILE = "sct3288"
+
+
+def profile(name: str) -> SctProfile:
+    if name not in PROFILES:
+        raise SctHexError(f"unknown SCT profile {name!r} (have: {', '.join(PROFILES)})")
+    return PROFILES[name]
+
 
 class SctHexError(ValueError):
     pass
@@ -190,23 +237,23 @@ def segment_starts(records: List[HexRecord]) -> List[int]:
     return starts
 
 
-def compile_stream(records: List[HexRecord]) -> Tuple[bytes, dict]:
+def compile_stream(records: List[HexRecord],
+                   profile_name: str = DEFAULT_PROFILE) -> Tuple[bytes, dict]:
+    prof = profile(profile_name)
+    region_table = prof.region_table
     starts = segment_starts(records)
     start_set = set(starts)
     for i in starts:
-        if records[i].linear not in REGION_TABLE:
+        if records[i].linear not in region_table:
             raise SctHexError(
                 f"segment starting at linear address {records[i].linear:#08x} "
-                f"is not in the vendor's SCT3288 erase ladder "
-                f"(SCT3252.cs:3248-3420), so no FLASH_INITIAL erase region is "
-                f"known for it. Erasing the wrong region can brick the "
-                f"baseband, so this is refused rather than guessed. If the "
-                f"vendor tool really does flash this layout, add the address "
-                f"and its InitFlashTypeEnum to "
-                f"radio_fw.vendor.fwupd_sct.SEGMENT_ERASE_TYPE.")
+                f"is not in the vendor's {prof.chip} erase ladder, so no "
+                f"FLASH_INITIAL erase region is known for it. Erasing the wrong "
+                f"region can brick the baseband, so this is refused rather than "
+                f"guessed. Is this the {prof.chip} file for this radio?")
 
     for i, rec in enumerate(records):
-        if i not in start_set and rec.linear in VENDOR_LADDER_BASES:
+        if i not in start_set and rec.linear in prof.ladder_bases:
             raise SctHexError(
                 f"record {i} writes to {rec.linear:#08x}, which is an erase-region "
                 f"base, but it continues the previous record contiguously so no "
@@ -243,7 +290,7 @@ def compile_stream(records: List[HexRecord]) -> Tuple[bytes, dict]:
     for k, rec in enumerate(records):
         if k in next_start:
             pos = next_start[k]
-            region = REGION_TABLE[rec.linear]
+            region = region_table[rec.linear]
             pre: List[Tuple[bytes, str, str]] = []
             if k != 0:
                 pre.append((seg_parity_frame(), "seg_parity", ACK_SEG_PARITY))
@@ -269,7 +316,8 @@ def compile_stream(records: List[HexRecord]) -> Tuple[bytes, dict]:
 
     artifact = bytes(stream)
     manifest = {
-        "kind": "sct3288_baseband",
+        "kind": prof.kind,
+        "chip": prof.chip,
         "frames": len(records),
         "control_frames": sum(len(c["frames"]) for c in controls),
         "payload_bytes": written,
@@ -286,8 +334,8 @@ def compile_stream(records: List[HexRecord]) -> Tuple[bytes, dict]:
             "parity_enable": parity_enable_frame().hex(),
             "parity_enable_ack": ACK_PARITY_ENABLE,
             "flash_initial": flash_initial_frame(
-                REGION_TABLE[records[0].linear]).hex(),
-            "flash_initial_region": REGION_TABLE[records[0].linear],
+                region_table[records[0].linear]).hex(),
+            "flash_initial_region": region_table[records[0].linear],
             "flash_initial_ack": ACK_FLASH_INITIAL,
             "flash_end": flash_end_frame().hex(),
             "flash_end_ack": ACK_FLASH_INITIAL,
@@ -296,7 +344,7 @@ def compile_stream(records: List[HexRecord]) -> Tuple[bytes, dict]:
         "controls": controls,
         "frame_index": [list(t) for t in frame_index],
         "notes": (
-            "Full ordered OUT stream for the SCT3288 baseband updater "
+            f"Full ordered OUT stream for the {prof.chip} baseband updater "
             "(84A961-framed, u16be LEN excl. MOD, XOR parity over LEN..2F; "
             "any frame whose total length is odd carries one extra 0x00 that "
             "LEN does not count -- write frames are 13+N, so every even N is "
@@ -305,30 +353,33 @@ def compile_stream(records: List[HexRecord]) -> Tuple[bytes, dict]:
             "ACK bytes in session/controls. frame_index rows are "
             "[offset, length, kind]; 'frames' counts write frames only. "
             "Erase-region IDs are derived as (InitFlashTypeEnum << 1) | 1 over "
-            "the vendor's DMR_T2 segment ladder (see REGION_TABLE)."
+            f"the vendor's DMR_T2 segment ladder for the {prof.chip}."
         ),
     }
     return artifact, manifest
 
 
-def compile_hex_file(hex_path: str) -> Tuple[bytes, dict]:
+def compile_hex_file(hex_path: str, profile_name: str = DEFAULT_PROFILE) -> Tuple[bytes, dict]:
     raw = Path(hex_path).read_bytes()
     if not raw.strip():
         raise SctHexError(f"{hex_path}: empty file")
-    return compile_stream(parse_sct_hex(raw))
+    return compile_stream(parse_sct_hex(raw), profile_name)
 
 
 def _main() -> None:
     ap = argparse.ArgumentParser(
-        description="Precompile an SCT3288 baseband updater .hex into the "
-                    "exact serial wire stream (D890UV baseband DSP update).")
-    ap.add_argument("--hex", required=True, help="vendor SCT3288 updater .hex")
+        description="Precompile an SCT baseband updater .hex into the exact "
+                    "serial wire stream (AnyTone baseband DSP update).")
+    ap.add_argument("--hex", required=True, help="vendor SCT updater .hex")
+    ap.add_argument("--profile", default=DEFAULT_PROFILE, choices=sorted(PROFILES),
+                    help="the radio's chip: sct3288 (D890UV, D168UV) or sct3258 "
+                         "(D578); default %(default)s")
     ap.add_argument("--out", required=True, help="output wire-stream artifact")
     ap.add_argument("--manifest", required=True, help="output JSON manifest")
     args = ap.parse_args()
 
     try:
-        artifact, manifest = compile_hex_file(args.hex)
+        artifact, manifest = compile_hex_file(args.hex, args.profile)
     except (SctHexError, OSError) as e:
         print(f"fwupd_sct: {e}", file=sys.stderr)
         sys.exit(2)

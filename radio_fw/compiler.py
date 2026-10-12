@@ -77,6 +77,24 @@ def _read(path: str) -> bytes:
         raise CompileError('Cannot read "' + os.path.basename(path) + '": ' + str(e))
 
 
+def check_downloaded(res: CompileResult, model: str) -> CompileResult:
+    manifest = res.manifest or {}
+    if res.kind == spec.KIND_SCT:
+        want = fwupd_sct.profile(spec.sct_profile(model))
+        if manifest.get("kind") != want.kind:
+            raise CompileError(
+                "This " + spec.label(res.kind, model) + " was built for another chip (manifest kind \""
+                + str(manifest.get("kind")) + "\"), not the " + spec.model_label(model) + "'s "
+                + want.chip + ". It will NOT be flashed.")
+    elif res.kind in spec.CPS_KINDS and manifest.get("model") is not None:
+        allowed = set(spec.server_models(model)) | {spec.cps_model(model)}
+        if manifest.get("model") not in allowed:
+            raise CompileError(
+                "This " + spec.label(res.kind, model) + " was built for \"" + str(manifest.get("model"))
+                + "\", not the " + spec.model_label(model) + ". It will NOT be flashed.")
+    return res
+
+
 def compile_files(kind: str, paths: list[str], model: str = "d890") -> CompileResult:
     if kind not in spec.KIND_FILESPEC:
         raise CompileError('Unknown update kind "' + str(kind) + '".')
@@ -86,7 +104,7 @@ def compile_files(kind: str, paths: list[str], model: str = "d890") -> CompileRe
     try:
         if kind == spec.KIND_SCT:
             artifact, manifest = fwupd_sct.compile_stream(
-                fwupd_sct.parse_sct_hex(_read(files["hex"])))
+                fwupd_sct.parse_sct_hex(_read(files["hex"])), spec.sct_profile(model))
         elif kind == spec.KIND_NR:
             ufw = _read(files["ufw"])
             manifest = fwupd_nr.build_manifest(ufw)

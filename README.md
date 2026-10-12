@@ -12,10 +12,10 @@ it through an `aesapp://` link.
 
 | Tab | What it writes | Radios | Files it takes |
 |-----|----------------|--------|----------------|
-| **Bluetooth Module Update** | Bluetooth-module firmware, over Bluetooth | D878UV, D878UVII, D578UV, D578UVII, D890UV | `.ufw` (D890UV), `.bin` (D578 and D878 families) |
-| **Radio and Boards Updates** | radio firmware, icons and fonts, and the boards each radio has | D878UV, D878UVII, D890UV | `.CDD` + `.CDI` (+ optional `.spi`), `.ufw`, `.hex` |
-| **Digital Contact Refresh** | the digital-contact database (the caller-ID names shown for DMR IDs) | D168UV, D578UV, D578UVII, D878UV, D878UVII, D890UV | a list from your cps.aes.app account, or your own `user.csv` and `nxdn.csv` |
-| **Write Codeplug** | a codeplug prepared on cps.aes.app | D168UV, D578UVII, D878UVII, D890UV | none — it arrives with the link |
+| **Bluetooth Module Update** | Bluetooth-module firmware, over Bluetooth | D878UV, D878UVII, D578UV, D578UVII/III, D890UV | `.ufw` (D890UV), `.bin` (D578 and D878 families) |
+| **Radio and Boards Updates** | radio firmware, icons and fonts, and the boards each radio has; the BT01 microphone's firmware and icons | D168UV, D578UV (first generation, not yet tested on a real radio), D578UVII/III, D878UV, D878UVII, D890UV, BT01 microphone | `.spi` + `.CDD` + `.CDI` (the `.spi` is optional only for the D890UV and D878), `.ufw`, `.hex` |
+| **Digital Contact Refresh** | the digital-contact database (the caller-ID names shown for DMR IDs) | D168UV, D578UV, D578UVII/III, D878UV, D878UVII, D890UV | a list from your cps.aes.app account, or your own `user.csv` and `nxdn.csv` |
+| **Write Codeplug** | a codeplug prepared on cps.aes.app | D168UV, D578UVII/III, D878UVII, D890UV | none — it arrives with the link |
 
 Notes worth knowing before you use it:
 
@@ -94,12 +94,13 @@ bt_ota/                 Bluetooth-module tab, CLI and BLE protocol backends
   client.py  gui.py     backend selector + the Tkinter window (builds the tabs)
   update_check.py       "is there a newer release?"
   extract_auth_lib.py   one-time: pull libjl_ota_auth.so out of the OTA APK
-  assets/               branding and the step photos
+  assets/               branding
 radio_fw/               Radio and Boards tab
   spec.py               the four targets: files, write order, entry combos
   compiler.py           vendor files -> validated wire artifact
   engines.py            the four serial wire engines
   vendor/fwupd_*.py     the precompilers (shared with the server)
+  assets/               the step photos, <MODEL>_<STEP>.png
 radio_contacts/         Digital Contact Refresh tab
   catalog.py            the cps.aes.app client (session, lists, downloads)
   contact_build.py      builds a contact database here, from your own CSVs

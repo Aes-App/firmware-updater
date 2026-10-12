@@ -41,6 +41,40 @@ MODELS = {
         "aprs": dict(base=0x00002000, span=(0x00000000, 0x00100000), max_entries=1,
                      handshake="UPDATE", ident="IA-BORD", finish_acked=False),
     },
+    "d168": {
+        "fw":   dict(base=0x08004000, span=(0x08000000, 0x08400000), max_entries=2,
+                     handshake="UPDATE", ident="ID168UV", finish_acked=True,
+                     spi_required=True),
+        "icon": dict(base=0x00020000, span=(0x00000000, 0x08000000), max_entries=None,
+                     handshake="PROGRAM", ident=None, finish_acked=True,
+                     spi_required=True),
+    },
+    "d578uv2": {
+        "fw":   dict(base=0x08006000, span=(0x08000000, 0x08400000), max_entries=1,
+                     handshake="UPDATE", ident=("I578UV2A", "ID578UV2"),
+                     finish_acked=True, spi_required=True),
+        "icon": dict(base=0x00020000, span=(0x00000000, 0x08000000), max_entries=None,
+                     handshake="PROGRAM", ident=None, finish_acked=True,
+                     spi_required=True),
+        "aprs": dict(base=0x00002000, span=(0x00000000, 0x00100000), max_entries=1,
+                     handshake="UPDATE", ident="IA-BORD", finish_acked=False),
+    },
+    "d578uv": {
+        "fw":   dict(base=0x08006000, span=(0x08000000, 0x08400000), max_entries=1,
+                     handshake="UPDATE", ident=("ID578UVA", "ID578UV"),
+                     finish_acked=True, spi_required=True),
+        "icon": dict(base=0x00020000, span=(0x00000000, 0x08000000), max_entries=None,
+                     handshake="PROGRAM", ident=None, finish_acked=True,
+                     spi_required=True),
+    },
+    "bt01": {
+        "fw":   dict(base=0x08004000, span=(0x08000000, 0x08400000), max_entries=1,
+                     handshake="UPDATE", ident="IBT-MIC", finish_acked=True,
+                     spi_required=True),
+        "icon": dict(base=0x00000000, span=(0x00000000, 0x08000000), max_entries=None,
+                     handshake="PROGRAM", ident=None, finish_acked=True,
+                     spi_required=True),
+    },
 }
 DEFAULT_MODEL = "d890"
 
@@ -128,6 +162,69 @@ def parse_spi(spi: bytes) -> Tuple[int, int, int]:
             f".spi on-wire block size {block} != {BLOCK} (not a CPS-update "
             f".spi, or a protocol revision this compiler has never seen)")
     return block, count, total
+
+
+SPI_HEADER_LEN = 14
+SPI_TAG_LEN = 8
+
+
+def spi_model_tag(spi: Optional[bytes]) -> Optional[str]:
+    if not spi or len(spi) < SPI_HEADER_LEN + SPI_TAG_LEN:
+        return None
+    raw = spi[SPI_HEADER_LEN:SPI_HEADER_LEN + SPI_TAG_LEN]
+    try:
+        tag = raw.decode("ascii").strip(" \x00")
+    except UnicodeDecodeError:
+        raise UpdateFileError(f".spi model tag {raw!r} is not ASCII")
+    return tag or None
+
+
+def resolve_ident(model: str, kind: str, spi: Optional[bytes]) -> Optional[str]:
+    accepted = _target(model, kind).get("ident")
+    if accepted is None:
+        return None
+    if isinstance(accepted, str):
+        accepted = (accepted,)
+    tag = spi_model_tag(spi)
+    if tag is None:
+        if len(accepted) == 1:
+            return accepted[0]
+        raise UpdateFileError(
+            f"the {model} {kind} target takes {' or '.join(accepted)}, and only "
+            f"the package's .spi model tag says which -- choose the .spi of the "
+            f"package")
+    ident = "I" + tag
+    if ident not in accepted:
+        raise UpdateFileError(
+            f"the .spi says this package is for a {tag} (bootloader {ident}), "
+            f"but the {model} {kind} target takes {' or '.join(accepted)} -- "
+            f"wrong package for this radio")
+    return ident
+
+
+def entries_to_send(entries: List[CdiEntry], cdd_len: int,
+                    spi: Optional[bytes]) -> Tuple[List[CdiEntry], List[CdiEntry]]:
+    if spi is None:
+        return entries, []
+    count = parse_spi(spi)[1]
+    if count >= len(entries):
+        return entries, []
+    if count == 0:
+        raise UpdateFileError(".spi declares 0 entries -- nothing to send")
+    expect_foff = 0
+    for e in entries:
+        if e.foff != expect_foff:
+            raise UpdateFileError(
+                f".CDI entry {e.index} ({e.name}): .CDD offset {e.foff:#x} != "
+                f"expected {expect_foff:#x} -- the .CDI lists entries past the "
+                f".spi's {count}, and they do not tile the .CDD")
+        expect_foff += e.length
+    if expect_foff != cdd_len:
+        raise UpdateFileError(
+            f"the .CDI's {len(entries)} entries cover {expect_foff} bytes but the "
+            f".CDD is {cdd_len} -- the entries past the .spi's {count} do not "
+            f"match this .CDD")
+    return entries[:count], entries[count:]
 
 
 def validate_package(kind: str, entries: List[CdiEntry], cdd_len: int,
@@ -226,12 +323,16 @@ def compile_update(kind: str, cdd: bytes, cdi: bytes,
     k = _target(model, kind)
     if not cdd:
         raise UpdateFileError(".CDD is empty")
-    entries = parse_cdi(cdi)
+    if spi is None and k.get("spi_required"):
+        raise UpdateFileError(
+            f"the {model} {kind} update needs the package's .spi as well as its "
+            f".CDD and .CDI -- choose the .spi and the other two load with it")
+    ident = resolve_ident(model, kind, spi)
+    entries, skipped = entries_to_send(parse_cdi(cdi), len(cdd), spi)
     validate_package(kind, entries, len(cdd), spi, model)
     artifact = compile_frames(entries, cdd)
 
     n_frames = len(artifact) // FRAME_LEN
-    ident = k.get("ident")
     manifest = {
         "kind": kind,
         "model": model,
@@ -269,6 +370,10 @@ def compile_update(kind: str, cdd: bytes, cdi: bytes,
              "cdd_offset": e.foff, "frames": e.frames}
             for e in entries
         ],
+        "skipped_entries": [
+            {"name": e.name, "addr": e.addr, "length": e.length}
+            for e in skipped
+        ],
         "inputs": {
             "cdd_sha256": hashlib.sha256(cdd).hexdigest(),
             "cdi_sha256": hashlib.sha256(cdi).hexdigest(),
@@ -281,12 +386,15 @@ def compile_update(kind: str, cdd: bytes, cdi: bytes,
 def _main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(
         prog="python -m radio_fw.vendor.fwupd_cps",
-        description="Precompile a D890 CPS update package (.CDD/.CDI/.spi) "
+        description="Precompile an AnyTone CPS update package (.CDD/.CDI/.spi) "
                     "into the exact 40-byte serial frame stream the factory "
                     "CPS sends, plus a JSON manifest for the WebSerial writer.")
-    ap.add_argument("--kind", required=True, choices=sorted(KIND),
-                    help="fw = main MCU firmware (base 0x0800C000); "
-                         "icon = asset/icon flash (base 0x00040000)")
+    ap.add_argument("--model", default=DEFAULT_MODEL, choices=sorted(MODELS),
+                    help="radio model (default %(default)s)")
+    ap.add_argument("--kind", required=True,
+                    choices=sorted({k for kinds in MODELS.values() for k in kinds}),
+                    help="fw = main MCU firmware; icon = asset/icon flash; "
+                         "aprs = the D878UVII APRS + BT board")
     ap.add_argument("--cdd", required=True, help="vendor .CDD (raw payload)")
     ap.add_argument("--cdi", required=True, help="vendor .CDI (asset index)")
     ap.add_argument("--spi", help="vendor .spi (package manifest; validated "
@@ -304,7 +412,7 @@ def _main(argv: Optional[List[str]] = None) -> int:
         print(f"cannot read input: {e}", file=sys.stderr)
         return 2
     try:
-        artifact, manifest = compile_update(args.kind, cdd, cdi, spi)
+        artifact, manifest = compile_update(args.kind, cdd, cdi, spi, model=args.model)
     except UpdateFileError as e:
         print(f"REFUSING to compile {args.kind} update: {e}", file=sys.stderr)
         return 2

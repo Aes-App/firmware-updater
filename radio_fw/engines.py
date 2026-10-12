@@ -78,13 +78,13 @@ class SerialLink:
         if self.abort is not None and self.abort.is_set():
             raise AbortedError("aborted by the operator")
 
-    def open(self, baud: int, dtr: bool, rts: bool):
+    def open(self, baud: int, dtr: bool, rts: bool, stopbits: int = 1):
         ser = serial.Serial()
         ser.port = self.port_name
         ser.baudrate = baud
         ser.bytesize = serial.EIGHTBITS
         ser.parity = serial.PARITY_NONE
-        ser.stopbits = serial.STOPBITS_ONE
+        ser.stopbits = serial.STOPBITS_TWO if stopbits == 2 else serial.STOPBITS_ONE
         ser.timeout = _READ_POLL_S
         ser.write_timeout = 5
         ser.rtscts = False
@@ -100,7 +100,7 @@ class SerialLink:
         self.ser = ser
         self.baudrate = baud
         self._buf = bytearray()
-        self.log("port open @ " + str(baud) + " baud 8N1", "ok")
+        self.log("port open @ " + str(baud) + " baud 8N" + ("2" if stopbits == 2 else "1"), "ok")
         self.log("control lines: DTR=" + ("1" if dtr else "0") + " RTS=" + ("1" if rts else "0"), "info")
 
     def set_baud(self, baud: int):
@@ -307,11 +307,43 @@ def _cps_handshake(kind: str, link: SerialLink, manifest: dict, on_log):
                 "the identity frame did not end in 06 (" + _hex(ident) + ") — unreadable "
                 "bootloader identity, refusing to write.")
         want = manifest.get("ident_reply_prefix_ascii")
-        if want and _ascii(ident).find(want) != 0:
+        got = _ident_model(ident)
+        if want and got != want:
             raise FirmwareUpdateError(
-                'the bootloader identifies as "' + _ascii(ident)[:12] + '" but this package is for "'
-                + want + '" — WRONG RADIO for this firmware. Nothing was written.')
+                'the bootloader identifies as "' + got + '"' + _ident_name(got)
+                + ' but this package is for "' + want + '"' + _ident_name(want)
+                + " — WRONG RADIO for this firmware. Nothing was written."
+                + ((" " + CPS_IDENT_HINTS[got]) if got in CPS_IDENT_HINTS else ""))
         on_log("bootloader identity accepted (" + (want or "no model gate in the manifest") + ")", "ok")
+
+
+CPS_IDENT_NAMES = {
+    "ID890UV": "a D890UV",
+    "ID878UV2": "a D878UVII",
+    "ID878UV": "a first-generation D878UV",
+    "ID168UV": "a D168UV",
+    "I578UV2A": "a D578UVII/III with the AT MCU",
+    "ID578UV2": "a D578UVII/III with the GD MCU",
+    "ID578UVA": "a first-generation D578UV with the AT MCU",
+    "ID578UV": "a first-generation D578UV with the GD MCU",
+    "IA-BORD": "the APRS + BT board",
+    "IBT-MIC": "a BT01 microphone",
+}
+CPS_IDENT_HINTS = {
+    "I578UV2A": "This radio needs the D578UV2_AT firmware.",
+    "ID578UV2": "This radio needs the D578UV2_GD firmware.",
+    "ID578UVA": "This radio needs the D578UV_AT firmware.",
+    "ID578UV": "This radio needs the D578UV_GD firmware.",
+}
+
+
+def _ident_model(ident: bytes) -> str:
+    return _ascii(ident[:8].split(b"\x00", 1)[0])
+
+
+def _ident_name(ident_model: str) -> str:
+    name = CPS_IDENT_NAMES.get(ident_model)
+    return " (" + name + ")" if name else ""
 
 
 def _cps_await_ack(link: SerialLink, index: int, frame: bytes, timeout_ms: int):
@@ -349,6 +381,12 @@ def _run_cps(kind: str, port_name: str, artifact: bytes, manifest: dict,
         _cps_handshake(kind, link, manifest, on_log)
 
         link.flush()
+        skipped = manifest.get("skipped_entries") or []
+        if skipped:
+            on_log("the package's .CDI lists " + str(len(skipped)) + " more entr"
+                   + ("y" if len(skipped) == 1 else "ies") + " than its .spi counts ("
+                   + ", ".join(str(e.get("name", "?")) for e in skipped)
+                   + "); sending only the .spi's entries, as the factory CPS does", "info")
         on_log("streaming " + str(frames) + " x " + str(frame_len) + "-byte frames ("
                + str(manifest.get("payload_bytes")) + " payload bytes) from 0x"
                + format((manifest.get("addr_first") or 0) & 0xFFFFFFFF, "x") + "…", "ok")
@@ -649,6 +687,10 @@ def _run_nr(port_name: str, artifact: bytes, manifest: dict, on_log, on_progress
 
 SCT_BAUD = 38400
 SCT_ALT_BAUD = 115200
+SCT_CHIPS = {
+    "sct3288_baseband": ("SCT3288", 38400, 115200),
+    "sct3258_baseband": ("SCT3258", 115200, 9600),
+}
 SCT_ACK_TIMEOUT_MS = 3000
 SCT_ERASE_TIMEOUT_MS = 15000
 SCT_REPLY_BODY_TIMEOUT_MS = 1000
@@ -660,7 +702,7 @@ SCT_RESENDABLE = ("write", "flash_initial", "flash_end")
 
 
 def plan_sct(artifact: bytes, manifest: dict) -> list[dict]:
-    if manifest.get("kind") != "sct3288_baseband":
+    if manifest.get("kind") not in SCT_CHIPS:
         raise FirmwareUpdateError(
             'this is the "sct" engine but the manifest says kind "' + str(manifest.get("kind"))
             + '" — wrong component. Nothing was sent.')
@@ -743,10 +785,12 @@ def _sct_is_redo_request(frame: bytes) -> bool:
 
 
 def _run_sct(port_name: str, artifact: bytes, manifest: dict, on_log, on_progress, abort,
-             baud: int = SCT_BAUD, pace_ms: int = 0):
+             baud: int | None = None, pace_ms: int = 0):
     plan = plan_sct(artifact, manifest)
     _verify_artifact(artifact, manifest, on_log)
     on_progress(0, len(plan), "handshake")
+    chip, default_baud, alt_baud = SCT_CHIPS[manifest["kind"]]
+    baud = baud or default_baud
 
     alt_first_ack = None
     parity_restore_frame = None
@@ -758,9 +802,9 @@ def _run_sct(port_name: str, artifact: bytes, manifest: dict, on_log, on_progres
     link = SerialLink(port_name, on_log=on_log, abort=abort)
     committed = False
     try:
-        link.open(baud, dtr=True, rts=True)
+        link.open(baud, dtr=False, rts=False, stopbits=2)
         link.flush()
-        on_log("SCT3288: " + str(manifest.get("frames")) + " write frames + "
+        on_log(chip + ": " + str(manifest.get("frames")) + " write frames + "
                + str(len(plan) - manifest.get("frames")) + " control frames, "
                + str(manifest.get("payload_bytes")) + " payload bytes, "
                + str(len(manifest.get("segments") or [])) + " erase segment(s)", "ok")
@@ -798,19 +842,19 @@ def _run_sct(port_name: str, artifact: bytes, manifest: dict, on_log, on_progres
                         break
                     if i == 0:
                         raise FirmwareUpdateError(
-                            str(e) + " The SCT3288 did not answer the opening frame in a form this "
+                            str(e) + " The " + chip + " did not answer the opening frame in a form this "
                             "engine recognises. The most likely cause is the host baud: this run used "
                             + str(baud) + " — try "
-                            + str(SCT_ALT_BAUD if baud == SCT_BAUD else SCT_BAUD) + " instead."
+                            + str(alt_baud if baud != alt_baud else default_baud) + " instead."
                             + _sct_state_note(committed))
                     raise FirmwareUpdateError(
-                        str(e) + " — the SCT3288 stopped answering as expected."
+                        str(e) + " — the " + chip + " stopped answering as expected."
                         + _sct_state_note(committed))
                 if r in accepted:
                     break
                 if (_sct_is_redo_request(r) and kind in SCT_RESENDABLE
                         and attempt == 1):
-                    on_log("RX " + _hex(r) + " — the SCT3288 asked for frame " + str(i)
+                    on_log("RX " + _hex(r) + " — the " + chip + " asked for frame " + str(i)
                            + " (" + kind + ") again; resending once", "er")
                     link.send(frame)
                     continue
@@ -830,7 +874,7 @@ def _run_sct(port_name: str, artifact: bytes, manifest: dict, on_log, on_progres
             if pace_ms:
                 time.sleep(pace_ms / 1000.0)
             on_progress(i + 1, len(plan), "write" if kind == "write" else ("finish" if writes_sent else "handshake"))
-        on_log("SCT3288 update complete: " + str(writes_sent) + " write frames acknowledged. This "
+        on_log(chip + " update complete: " + str(writes_sent) + " write frames acknowledged. This "
                "protocol has no read-back or verify step.", "ok")
         on_progress(len(plan), len(plan), "done")
     except FirmwareUpdateError:
@@ -870,6 +914,6 @@ def run(kind: str, port_name: str, artifact, manifest: dict,
         _run_nr(port_name, artifact, manifest, on_log, on_progress, abort)
     elif kind == "sct":
         _run_sct(port_name, artifact, manifest, on_log, on_progress, abort,
-                 baud=opts.get("baud") or SCT_BAUD, pace_ms=opts.get("pace_ms", 0))
+                 baud=opts.get("baud"), pace_ms=opts.get("pace_ms", 0))
     else:
         raise FirmwareUpdateError('unknown update kind "' + str(kind) + '"')
