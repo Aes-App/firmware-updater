@@ -7,6 +7,8 @@ codeplugs over a USB cable. No Android phone and no vendor CPS required.
 Ships as a macOS `.app`, a Windows `.exe` and a CLI. It works on its own, and
 pairs with [cps.aes.app](https://cps.aes.app), which can hand a job straight to
 it through an `aesapp://` link.
+<img width="863" height="751" alt="Screenshot 2026-10-12 at 10 58 41 AM" src="https://github.com/user-attachments/assets/0eac0e3d-8893-4d94-a097-7e95d5ada80d" />
+<img width="851" height="750" alt="Screenshot 2026-10-13 at 1 30 59 AM" src="https://github.com/user-attachments/assets/22878359-cce9-4acf-923a-8f0aa5680d0b" />
 
 ## What it does
 
