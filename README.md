@@ -14,12 +14,19 @@ it through an `aesapp://` link.
 
 | Tab | What it writes | Radios | Files it takes |
 |-----|----------------|--------|----------------|
-| **Bluetooth Module Update** | Bluetooth-module firmware, over Bluetooth | D878UV, D878UVII, D578UV, D578UVII/III, D890UV | `.ufw` (D890UV), `.bin` (D578 and D878 families) |
-| **Radio and Boards Updates** | radio firmware, icons and fonts, and the boards each radio has; the BT01 microphone's firmware and icons | D168UV, D578UV (first generation, not yet tested on a real radio), D578UVII/III, D878UV, D878UVII, D890UV, BT01 microphone | `.spi` + `.CDD` + `.CDI` (the `.spi` is optional only for the D890UV and D878), `.ufw`, `.hex` |
-| **Digital Contact Refresh** | the digital-contact database (the caller-ID names shown for DMR IDs) | D168UV, D578UV, D578UVII/III, D878UV, D878UVII, D890UV | a list from your cps.aes.app account, or your own `user.csv` and `nxdn.csv` |
-| **Write Codeplug** | a codeplug prepared on cps.aes.app | D168UV, D578UVII/III, D878UVII, D890UV | none — it arrives with the link |
+| **Bluetooth Module Update** | Bluetooth-module firmware, over Bluetooth | D878UV, D878UVII, every D578, D890UV | `.ufw` (D890UV), `.bin` (D578 and D878 families) |
+| **Radio and Boards Updates** | radio firmware, icons and fonts, and the boards each radio has; the BT01 microphone's firmware and icons | D168UV, D578UV(III) Plus (firmware 2.xx), D578UV(III) G/Pro (firmware 1.xx, not yet tested on a real radio), D878UV, D878UVII, D890UV, BT01 microphone | `.spi` + `.CDD` + `.CDI` (the `.spi` is optional only for the D890UV and D878), `.ufw`, `.hex` |
+| **Digital Contact Refresh** | the digital-contact database (the caller-ID names shown for DMR IDs) | D168UV, every D578, D878UV, D878UVII, D890UV | a list from your cps.aes.app account, or your own `user.csv` and `nxdn.csv` |
+| **Write Codeplug** | a codeplug prepared on cps.aes.app | D168UV, D578UV(III) Plus, D878UVII, D890UV | none — it arrives with the link |
 
 Notes worth knowing before you use it:
+
+- **The D578s go by firmware, not by name.** Firmware 2.xx (the radio answers
+  `D578UV2` over USB) runs on the D578UV PLUS and D578UVIII PLUS, the
+  **D578UV(III) Plus** button; firmware 1.xx (`D578UV`) on every other D578, the
+  UV, UVIII, UVG, UVIIIG, UV PRO and UVIII PRO, the **D578UV(III) G/Pro** button.
+  Both use one CPS. The radio's Device Info screen shows its version, and the
+  updater refuses a firmware built for the other line.
 
 - **Digital Contact Refresh** takes either a list you uploaded to cps.aes.app or
   a register download of your own, which it turns into the radio's contact
@@ -28,8 +35,9 @@ Notes worth knowing before you use it:
 - **Radio and Boards Updates** offers what each radio actually has: a D890UV
   takes firmware, icons and fonts, the SCT3288 baseband and the NR board; a
   D878UV or D878UVII takes firmware, icons and fonts, and the APRS/Bluetooth
-  board. Targets are written with the main firmware last, so a failure part-way
-  through leaves the radio still bootable.
+  board. The radio firmware is always written first, then each board: every
+  target is its own power-on into update mode, and the firmware's bootloader
+  stays available for a retry.
 - **Write Codeplug** is hidden until a link opens it: there is nothing to do in
   it without one.
 - Protocol notes for the Bluetooth side are in
@@ -123,7 +131,7 @@ sign_and_notarize.sh    macOS sign + notarize + staple
 - **Radio and Boards Updates** writes main firmware and board flash. Those
   protocols read nothing back, so an interrupted write can leave a radio that
   will not boot. The tab asks for an explicit acknowledgement and always writes
-  main firmware last.
+  the radio firmware first.
 - **Digital Contact Refresh** replaces the whole contact database and keeps no
   backup of it. Your codeplug — channels, zones, settings — is untouched, and an
   interrupted contact write is safe to redo.

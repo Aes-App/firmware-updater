@@ -23,8 +23,8 @@ class RadioSpec:
 RADIOS: Dict[str, RadioSpec] = {
     "D878UV": RadioSpec("D878UV", "AnyTone AT-D878UV", "anytone_878uv", None, 200000),
     "D878UV2": RadioSpec("D878UV2", "AnyTone AT-D878UVII", "anytone_878", None, 500000),
-    "D578UV": RadioSpec("D578UV", "AnyTone AT-D578UV", "anytone_878", None, 500000),
-    "D578UV2": RadioSpec("D578UV2", "AnyTone AT-D578UVII", "anytone_878", None, 500000),
+    "D578UV": RadioSpec("D578UV", "AnyTone AT-D578UV(III) G/Pro", "anytone_878", None, 500000),
+    "D578UV2": RadioSpec("D578UV2", "AnyTone AT-D578UV(III) Plus", "anytone_878", None, 500000),
     "D168UV": RadioSpec("D168UV", "AnyTone AT-D168UV", "anytone_878", None, 500000),
     "D890UV": RadioSpec("D890UV", "AnyTone AT-D890UV", "anytone_890", "anytone_890_nx", 500000, 80000),
     "DMR-7X2": RadioSpec("DMR-7X2", "BTECH DMR-7X2 (AT-D890UV)", "anytone_890", "anytone_890_nx",

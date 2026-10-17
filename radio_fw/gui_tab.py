@@ -370,7 +370,7 @@ class RadioBoardsTab:
         if self._writing:
             return
         self.model = self.model_var.get()
-        self._show_untested()
+        self._show_model_notes()
         self._build_rows()
         self.confirm.set(False)
         if self.source_var.get() == "server":
@@ -574,9 +574,11 @@ class RadioBoardsTab:
         self._flow_model_buttons()
         model_row.bind("<Configure>", self._flow_model_buttons, add="+")
 
+        self.covers_lbl = ttk.Label(outer, text="", foreground="#444", justify="left")
+        _follow_width(self.covers_lbl, outer)
         self.untested_lbl = ttk.Label(outer, text="", foreground="#b00020", justify="left")
         _follow_width(self.untested_lbl, outer)
-        self._show_untested()
+        self._show_model_notes()
 
         src_row = self.src_row = ttk.Frame(outer)
         src_row.pack(fill="x", pady=(0, 4))
@@ -773,10 +775,18 @@ class RadioBoardsTab:
             rb.pack(in_=lines[n], side="left", padx=(8, 0))
             rb.lift(lines[n])
 
-    def _show_untested(self):
+    def _show_model_notes(self):
+        above = self._model_row
+        covers = spec.covers(self.model)
+        if covers:
+            self.covers_lbl.configure(text=covers)
+            self.covers_lbl.pack(fill="x", pady=(0, 6), after=above)
+            above = self.covers_lbl
+        else:
+            self.covers_lbl.pack_forget()
         if spec.is_untested(self.model):
             self.untested_lbl.configure(text="⚠ " + spec.untested_warning(self.model))
-            self.untested_lbl.pack(fill="x", pady=(0, 6), after=self._model_row)
+            self.untested_lbl.pack(fill="x", pady=(0, 6), after=above)
         else:
             self.untested_lbl.pack_forget()
 

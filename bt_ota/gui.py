@@ -17,7 +17,7 @@ from .client import MODELS, firmware_kind, make_client, scan_devices
 APP_TITLE = "AesApp Radio Updater"
 VENDOR = "AesApp Inc."
 WEBSITE = "https://aes.app/"
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 LOG_PREFIX = "[aesapp]"
 
 try:
@@ -655,7 +655,7 @@ def _diag() -> int:
     assert _cl.parse_launch_url("aesapp://contacts?token=abcdefghijklmnop").token == "abcdefghijklmnop"
     from radio_contacts import contact_build as _cb, contact_tables as _ct
     assert _cb.contact_index_key(3101234) == 102769768
-    assert _cb.radio_for_ident("878UV2").capacity == 500000
+    assert _cb.radio_for_ident("D878UV2").capacity == 500000
     assert _ct.continent_of("DEU") == "EU" and len(_ct.COUNTRY_CODES) > 100
     print(f"DIAG OK: BT tab (bleak+so, auth sample={out.hex()}); "
           f"Radio tab (pyserial {serial.VERSION}, precompilers, {len(images)} step photos, "

@@ -158,14 +158,27 @@ def test_a_downloaded_cps_component_must_be_for_this_radio():
     assert compiler.check_downloaded(older, "d890") is older
 
 
-def test_the_first_generation_d578uv():
+def test_the_d578uv_on_firmware_1xx():
     assert spec.model_order("d578uv") == [spec.KIND_FW, spec.KIND_ICON, spec.KIND_SCT]
     assert spec.sct_profile("d578uv") == "sct3258"
     assert spec.mcu_reset("d578uv") == spec.mcu_reset("d578uv2")
     assert spec.is_untested("d578uv")
     assert "not been tested on a real radio" in spec.untested_warning("d578uv")
     assert [m for m in spec.MODEL_ORDER if spec.is_untested(m)] == ["d578uv"]
-    assert spec.model_label("d578uv2") == "D578UVII/III"
+    assert spec.model_label("d578uv2") == "D578UV(III) Plus"
+    assert spec.model_label("d578uv") == "D578UV(III) G/Pro"
+
+
+def test_each_d578_button_names_the_radios_it_is_for():
+    plus, rest = spec.covers("d578uv2"), spec.covers("d578uv")
+    assert "AT-D578UV PLUS" in plus and "AT-D578UVIII PLUS" in plus and "2.xx" in plus
+    for name in ("AT-D578UV,", "AT-D578UVIII,", "AT-D578UVG", "AT-D578UVIIIG", "AT-D578UV PRO",
+                 "AT-D578UVIII PRO"):
+        assert name in rest and name not in plus, name
+    assert "1.xx" in rest
+    assert [m for m in spec.MODEL_ORDER if spec.covers(m)] == ["d578uv2", "d578uv"]
+    assert spec.server_model_name("d578uv2") == "D578UV(III) Plus"
+    assert spec.server_model_name("d578uv") == "D578UV(III) G/Pro"
 
 
 def test_d578_packages_stay_on_their_own_generation(tmp_path):

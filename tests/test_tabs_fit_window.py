@@ -326,7 +326,7 @@ def test_an_untested_model_warns_while_selected_and_before_a_batch(monkeypatch):
         tab.model_var.set("d578uv2")
         tab._on_model_change()
         _settle(root)
-        assert not tab.untested_lbl.winfo_ismapped(), "the D578UVII/III is tested"
+        assert not tab.untested_lbl.winfo_ismapped(), "the D578UV(III) Plus is tested"
     finally:
         root.destroy()
 

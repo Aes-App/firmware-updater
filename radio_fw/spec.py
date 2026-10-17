@@ -179,7 +179,10 @@ MODELS = {
         "reset_image": "D168_Reset.png",
     },
     "d578uv2": {
-        "label": "D578UVII/III",
+        "label": "D578UV(III) Plus",
+        "covers": ("For the AT-D578UV PLUS and AT-D578UVIII PLUS, which run firmware 2.xx "
+                   "(D578UV2). Every other D578 runs firmware 1.xx: choose D578UV(III) G/Pro. "
+                   "The radio's Device Info screen shows its version."),
         "cps_model": "d578uv2",
         "sct_profile": "sct3258",
         "order": [KIND_FW, KIND_ICON, KIND_SCT, KIND_APRS],
@@ -191,7 +194,11 @@ MODELS = {
         "reset_image": "D578_Reset.png",
     },
     "d578uv": {
-        "label": "D578UV (Gen 1)",
+        "label": "D578UV(III) G/Pro",
+        "covers": ("For the AT-D578UV, AT-D578UVIII, AT-D578UVG, AT-D578UVIIIG, AT-D578UV PRO "
+                   "and AT-D578UVIII PRO, which run firmware 1.xx (D578UV). The Plus models run "
+                   "firmware 2.xx: choose D578UV(III) Plus. The radio's Device Info screen shows "
+                   "its version."),
         "cps_model": "d578uv",
         "sct_profile": "sct3258",
         "order": [KIND_FW, KIND_ICON, KIND_SCT],
@@ -230,8 +237,8 @@ SERVER_MODEL_NAME = {
     "d878uv": "D878UV",
     "d878uv2": "D878UVII",
     "d168": "D168UV",
-    "d578uv2": "D578UVII/III",
-    "d578uv": "D578UV",
+    "d578uv2": "D578UV(III) Plus",
+    "d578uv": "D578UV(III) G/Pro",
     "bt01": "BT01",
 }
 
@@ -250,6 +257,10 @@ def server_model_tag(catalog_model: str) -> str:
 
 def model_label(model: str) -> str:
     return MODELS[model]["label"]
+
+
+def covers(model: str) -> str:
+    return MODELS[model].get("covers", "")
 
 
 def model_order(model: str) -> list[str]:

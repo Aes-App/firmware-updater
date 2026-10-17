@@ -798,7 +798,7 @@ def run_all():
         assert dev.finish_byte == 0x18 and cap.last_progress[2] == "done"
     check("d578uv2 fw: the AT image refuses a GD radio, flashes an AT one", t_578_at_vs_gd)
 
-    def t_578_first_generation():
+    def t_578_firmware_1xx():
         from radio_fw.vendor import fwupd_cps
         for tag, ident in (("D578UVA", "ID578UVA"), ("D578UV", "ID578UV")):
             cdd, cdi, spi = _synth_multi_pkg([(0x08006000, bytes(range(64)))], tag=tag)
@@ -813,7 +813,8 @@ def run_all():
         dev = CpsDevice("fw", ident_hex=b"ID578UV\x00\x00V100\x00\x00\x06".hex())
         _install(None, dev)
         e = expect_raises(lambda: _run_quiet("fw", artifact, manifest), "WRONG RADIO")
-        assert "first-generation D578UV" in str(e) and "D578UV_GD" in str(e), str(e)
+        assert "a D578UV(III) G/Pro on firmware 1.xx, with the GD MCU" in str(e) and "D578UV_GD" in str(e), str(e)
+        assert "a D578UV(III) Plus on firmware 2.xx, with the GD MCU" in str(e), str(e)
         assert len(dev.frames) == 0
         cdd, cdi, spi = _synth_multi_pkg([(0x08006000, bytes(range(80)))], tag="D578UVA")
         artifact, manifest = fwupd_cps.compile_update("fw", cdd, cdi, spi, model="d578uv")
@@ -823,7 +824,7 @@ def run_all():
         assert b"".join(dev.frames) == artifact
         expect_raises(lambda: fwupd_cps.compile_update("aprs", cdd, cdi, spi, model="d578uv"),
                       "no 'aprs' target")
-    check("d578uv (gen 1): its own idents, kept apart from the D578UVII/III's", t_578_first_generation)
+    check("d578uv (G/Pro, firmware 1.xx): its own idents, kept apart from the Plus's (2.xx)", t_578_firmware_1xx)
 
     def t_168_two_regions():
         from radio_fw.vendor import fwupd_cps

@@ -276,7 +276,7 @@ def test_the_radio_table_is_exact_and_excludes_the_868(tmp_path):
 IDENT_FRAMES = {
     "AT-D890UV": b"ID890UV" + b"\x00" + b"V100" + b"\x00\x00\x00" + b"\x06",
     "AT-D878UVII": b"ID878UV2" + b"\x0e" + b"V101" + b"\x00\x00" + b"\x06",
-    "AT-D578UVII": b"ID578UV2" + b"\x0e" + b"V101" + b"\x00\x00" + b"\x06",
+    "AT-D578UV(III) Plus": b"ID578UV2" + b"\x0e" + b"V101" + b"\x00\x00" + b"\x06",
     "AT-D168UV": b"ID168UV" + b"\x00" + b"V100" + b"\x00\x00\x00" + b"\x06",
     "DMR-7X2": bytes.fromhex("49444d522d3758320056313030010006"),
 }
