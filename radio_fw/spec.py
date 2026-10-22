@@ -160,13 +160,23 @@ MODELS = {
             KIND_SCT: _INSTR_SCT, KIND_NR: _INSTR_NR_D890,
         },
     },
+    "d878uv": {
+        "label": "D878UV",
+        "cps_model": "d878uv",
+        "order": [KIND_FW, KIND_ICON],
+        "instructions": {KIND_FW: _INSTR_FW, KIND_ICON: _INSTR_ICON},
+        "images": {KIND_FW: "D878_FW.png", KIND_ICON: "D878_ICON.png"},
+        "reset_image": "D878_Reset.png",
+    },
     "d878uv2": {
-        "label": "D878 Series (Gen 1 & 2)",
+        "label": "D878UVII",
         "cps_model": "d878uv2",
         "order": [KIND_FW, KIND_ICON, KIND_APRS],
         "instructions": {
             KIND_FW: _INSTR_FW, KIND_ICON: _INSTR_ICON, KIND_APRS: _INSTR_LINKBOARD,
         },
+        "images": {KIND_FW: "D878_FW.png", KIND_ICON: "D878_ICON.png", KIND_APRS: "D878_APRS.png"},
+        "reset_image": "D878_Reset.png",
     },
     "d168": {
         "label": "D168UV",
@@ -180,9 +190,8 @@ MODELS = {
     },
     "d578uv2": {
         "label": "D578UV(III) Plus",
-        "covers": ("For the AT-D578UV PLUS and AT-D578UVIII PLUS, which run firmware 2.xx "
-                   "(D578UV2). Every other D578 runs firmware 1.xx: choose D578UV(III) G/Pro. "
-                   "The radio's Device Info screen shows its version."),
+        "covers": ("The AT-D578UV PLUS and AT-D578UVIII PLUS run firmware 2.xx (D578UV2); every "
+                   "other D578 runs 1.xx. The radio's Device Info screen shows its version."),
         "cps_model": "d578uv2",
         "sct_profile": "sct3258",
         "order": [KIND_FW, KIND_ICON, KIND_SCT, KIND_APRS],
@@ -195,10 +204,9 @@ MODELS = {
     },
     "d578uv": {
         "label": "D578UV(III) G/Pro",
-        "covers": ("For the AT-D578UV, AT-D578UVIII, AT-D578UVG, AT-D578UVIIIG, AT-D578UV PRO "
-                   "and AT-D578UVIII PRO, which run firmware 1.xx (D578UV). The Plus models run "
-                   "firmware 2.xx: choose D578UV(III) Plus. The radio's Device Info screen shows "
-                   "its version."),
+        "covers": ("The AT-D578UV, AT-D578UVIII, AT-D578UVG, AT-D578UVIIIG, AT-D578UV PRO and "
+                   "AT-D578UVIII PRO run firmware 1.xx (D578UV); the PLUS models run 2.xx. The "
+                   "radio's Device Info screen shows its version."),
         "cps_model": "d578uv",
         "sct_profile": "sct3258",
         "order": [KIND_FW, KIND_ICON, KIND_SCT],
@@ -221,11 +229,74 @@ MODELS = {
     },
 }
 DEFAULT_MODEL = "d890"
-MODEL_ORDER = ["d890", "d878uv2", "d168", "d578uv2", "d578uv", "bt01"]
+MODEL_ORDER = ["d890", "d878", "d168", "d578", "bt01"]
+
+FAMILIES = {
+    "d878": {
+        "label": "D878 Series",
+        "members": ("d878uv", "d878uv2"),
+        "chips": ("GD32",),
+        "variants": {"d878uv": "D878UV (1st Gen)", "d878uv2": "D878UVII (2nd Gen)"},
+        "chip_names": {"GD32": "GD32 MCU"},
+    },
+    "d578": {
+        "label": "D578 Series",
+        "members": ("d578uv", "d578uv2"),
+        "chips": ("AT32", "GD32"),
+        "variants": {"d578uv": "D578UV (1st Gen)", "d578uv2": "D578UV2 (2nd Gen)"},
+        "chip_names": {"AT32": "AT32 MCU (New)", "GD32": "GD32 MCU (Old)"},
+    },
+}
+PC_IDENT_MODEL = {
+    "D890UV": "d890",
+    "D878UV": "d878uv",
+    "D878UV2": "d878uv2",
+    "D168UV": "d168",
+    "D578UV2": "d578uv2",
+    "D578UV": "d578uv",
+}
+FW_BUILD_IDENT = {
+    ("d578uv2", "AT32"): "I578UV2A",
+    ("d578uv2", "GD32"): "ID578UV2",
+    ("d578uv", "AT32"): "ID578UVA",
+    ("d578uv", "GD32"): "ID578UV",
+}
+
+
+def is_family(choice: str) -> bool:
+    return choice in FAMILIES
+
+
+def choice_label(choice: str) -> str:
+    return FAMILIES[choice]["label"] if choice in FAMILIES else model_label(choice)
+
+
+def family_members(choice: str) -> tuple[str, ...]:
+    return FAMILIES[choice]["members"] if choice in FAMILIES else (choice,)
+
+
+def family_chips(choice: str) -> tuple[str, ...]:
+    return FAMILIES[choice]["chips"] if choice in FAMILIES else ()
+
+
+def variant_label(choice: str, model: str) -> str:
+    return FAMILIES[choice]["variants"].get(model, model_label(model)) if choice in FAMILIES else model_label(model)
+
+
+def chip_label(choice: str, chip: str) -> str:
+    return FAMILIES[choice]["chip_names"].get(chip, chip + " MCU") if choice in FAMILIES else chip + " MCU"
+
+
+def family_of(model: str) -> str:
+    return next((f for f, v in FAMILIES.items() if model in v["members"]), model)
+
+
+def identified_model(choice: str, pc_ident_model: str) -> str | None:
+    model = PC_IDENT_MODEL.get(pc_ident_model)
+    return model if model in family_members(choice) else None
 
 SERVER_MODELS = {
     "d890": ["d890"],
-    "d878uv2": ["d878uv", "d878uv2"],
 }
 SERVER_MODEL_TAG = {
     "d890": "",
@@ -273,6 +344,7 @@ def cps_model(model: str) -> str:
 
 USB_CHIPS = {
     "d890": ("STM32",),
+    "d878uv": ("GD32",),
     "d878uv2": ("GD32",),
     "d168": ("AT32",),
     "d578uv2": ("GD32", "AT32"),
@@ -291,6 +363,29 @@ FW_IDENT_CHIP = {
     "ID578UVA": "AT32",
     "ID578UV": "GD32",
 }
+
+
+def fw_chip_of_ident(ident: str | None) -> str | None:
+    return FW_IDENT_CHIP.get(ident or "")
+
+
+def fw_model_mismatch(choice: str, model: str, manifest: dict | None) -> str:
+    built_for = (manifest or {}).get("model")
+    if choice not in FAMILIES or not built_for or built_for == cps_model(model):
+        return ""
+    other = next((m for m in family_members(choice) if cps_model(m) == built_for), None)
+    return ("This is for the " + (variant_label(choice, other) if other else built_for) + ", but the radio "
+            "identified here is the " + variant_label(choice, model) + ". Choose its own version.")
+
+
+def fw_build_mismatch(model: str, chip: str | None, manifest: dict | None) -> str:
+    have = fw_chip(manifest)
+    if not chip or not have or have == chip:
+        return ""
+    return ("This is the " + have[:2] + " build of the radio firmware, but the " + model_label(model)
+            + " identified here has " + _a(chip) + " MCU and needs the " + chip[:2] + " build: a version "
+            "marked " + chip[:2] + " on the AesApp server, or the .spi from the vendor's " + chip[:2]
+            + " folder.")
 
 
 def fw_chip(manifest: dict | None) -> str | None:

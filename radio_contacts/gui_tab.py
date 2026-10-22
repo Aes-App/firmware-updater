@@ -19,8 +19,7 @@ from . import segments as seg
 
 _LOG_SOURCE = "Digital Contact"
 
-_LOG_TAGS = {"tx": "#0b5fff", "rx": "#7a3fb0", "ok": "#127a2e", "er": "#b00020", "error": "#b00020",
-             "info": "#444"}
+_LOG_TAGS = {"er": "#b00020", "error": "#b00020", "done": "#127a2e"}
 _NO_SESSION_TEXT = ("Start at cps.aes.app/tools/contact-lists — the “Open in AesApp Radio Updater” "
                     "button at the bottom of My Contact Lists opens this app with a one-time link. "
                     "If your browser did not hand the link over, paste it below.")
@@ -1214,6 +1213,8 @@ class ContactRefreshTab:
             text=f"Done — {int(summary.get('blocks', 0)):,} blocks written in "
                  f"{summary.get('seconds', 0):.0f} s. The radio may restart to load the new list.",
             foreground="#127a2e")
+        self._log(f"Contact list written: {int(summary.get('blocks', 0)):,} blocks in "
+                  f"{summary.get('seconds', 0):.0f} s.", "done")
         self._refresh_write_state()
 
     def _on_write_error(self, msg: str, aborted: bool):

@@ -42,7 +42,7 @@ def test_each_device_puts_its_own_chips_on_top():
         assert _order(spec.usb_chips(model)) == [GD.device, AT.device, STM.device, BT.device, DBG.device]
     for model in ("d168", "bt01"):
         assert _order(spec.usb_chips(model)) == [AT.device, STM.device, GD.device, BT.device, DBG.device]
-    assert set(spec.USB_CHIPS) == set(spec.MODEL_ORDER), "every model names its chips"
+    assert set(spec.USB_CHIPS) == set(spec.MODELS), "every model names its chips"
 
 
 def test_the_label_names_the_chip_when_the_description_does_not():

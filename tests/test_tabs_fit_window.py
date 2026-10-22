@@ -46,6 +46,9 @@ def _window(height, width=980, server=True):
     if server:
         tab.source_var.set("server")
         tab.server_row.pack(fill="x", pady=(0, 6), after=tab.src_row)
+    else:
+        tab.source_var.set("local")
+        tab._on_source_change()
         tab.server_status.configure(
             text="4 target(s) downloaded and checksum-verified. Tick the ones to write, then agree and Start.")
     return root, tab
@@ -92,12 +95,7 @@ def _walk(root, tab):
     tab._on_ready()
     seen["Connect && Write"] = _visible(root, tab.connect_btn)
 
-    tab.port_row.pack_forget()
-    tab.skip_btn.pack_forget()
-    tab.progress.pack(fill="x", pady=(6, 0), before=tab.log_lbl)
-    tab.wstatus.pack(anchor="w", pady=(4, 0), before=tab.log_lbl)
-    tab.abort_btn.pack(anchor="w", pady=(4, 0), before=tab.log_lbl)
-    tab._schedule_fit()
+    tab._enter_writing_state()
     seen["Stop"] = _visible(root, tab.abort_btn)
 
     tab._on_stage_done()
@@ -119,6 +117,20 @@ def test_every_button_is_inside_the_window(height, server):
         root.destroy()
     missing = [name for name, ok in seen.items() if not ok]
     assert not missing, "%dpx window hides: %s" % (height, ", ".join(missing))
+
+
+def test_the_port_picker_follows_the_photo_without_a_blank_line(monkeypatch):
+    root, tab = _window(800, server=False)
+    try:
+        _press_start(tab, monkeypatch)
+        _settle(root)
+        under = tab._wbody.winfo_rooty() + tab._wbody.winfo_height()
+        buttons_at = tab.wctl.winfo_rooty() - under
+        tab._on_ready()
+        _settle(root)
+        assert tab.port_row.winfo_rooty() - under == buttons_at, (tab.port_row.winfo_rooty() - under, buttons_at)
+    finally:
+        root.destroy()
 
 
 def test_the_step_photo_gives_way_before_the_buttons_do():
@@ -273,6 +285,26 @@ def test_the_baseband_baud_choices_follow_the_chip():
         root.destroy()
 
 
+@pytest.mark.parametrize("width", [760, 980])
+def test_the_baud_picker_shares_the_port_line(width):
+    root, tab = _window(800, width=width, server=False)
+    try:
+        tab.model = "d890"
+        tab.plan = [types.SimpleNamespace(kind=spec.KIND_SCT, manifest={"kind": "sct3288_baseband"})]
+        tab._begin_radio()
+        tab._on_ready()
+        _settle(root)
+        box = tab._sct_baud_box
+
+        def mid(w):
+            return w.winfo_rooty() + w.winfo_height() // 2
+        assert abs(mid(box) - mid(tab.port_box)) <= 2, "on the port's line"
+        assert box.winfo_width() >= box.winfo_reqwidth()
+        assert box.winfo_rootx() + box.winfo_width() <= root.winfo_rootx() + root.winfo_width()
+    finally:
+        root.destroy()
+
+
 def test_the_bt01_asks_for_no_codeplug_backup(monkeypatch):
     from radio_fw import gui_tab
     root, tab = _window(800)
@@ -345,7 +377,9 @@ def test_the_model_buttons_wrap_rather_than_leave_the_window(width):
             hit = root.winfo_containing(cx, cy)
             assert hit is not None and str(hit).startswith(str(rb)), (rb.cget("text"), hit)
         lines = {rb.winfo_rooty() for rb in tab._model_btns}
-        assert (len(lines) == 1) == (width >= 820), (width, len(lines))
+        label = tab._model_row.grid_slaves(row=0, column=0)[0]
+        need = label.winfo_reqwidth() + sum(rb.winfo_reqwidth() + 8 for rb in tab._model_btns)
+        assert (len(lines) == 1) == (need <= tab._model_row.winfo_width()), (width, len(lines), need)
     finally:
         root.destroy()
 
@@ -408,7 +442,7 @@ def test_a_d578_firmware_for_the_other_mcu_is_refused(monkeypatch):
         root.destroy()
 
 
-@pytest.mark.parametrize("model", ["d168", "d578uv2", "bt01"])
+@pytest.mark.parametrize("model", ["d878uv2", "d168", "d578uv2", "bt01"])
 @pytest.mark.parametrize("height", [800, 640])
 def test_each_radios_own_photos_load_and_leave_the_buttons_on_screen(model, height):
     root, tab = _window(height, server=False)
@@ -431,5 +465,195 @@ def test_each_radios_own_photos_load_and_leave_the_buttons_on_screen(model, heig
         if spec.mcu_reset(model):
             assert tab._mcu_img is not None, model
         assert _visible(root, tab._again_frame.winfo_children()[0]), (model, height)
+    finally:
+        root.destroy()
+
+
+def _catalog_578():
+    def bundle(model, version, ident, label):
+        return {"fwupdModel": model, "cpsVersion": version, "label": label,
+                "components": [{"kind": "fw", "ident": ident}, {"kind": "icon"}]}
+    return [bundle("d578uv2", "2.08", "I578UV2A", "Plus 2.08 AT"),
+            bundle("d578uv2", "2.08-GD", "ID578UV2", "Plus 2.08 GD"),
+            bundle("d578uv2", "2.07", None, "Plus 2.07, build not given"),
+            bundle("d578uv", "1.21", "ID578UVA", "G/Pro 1.21 AT")]
+
+
+def test_the_d578_button_identifies_the_radio_before_anything_else(monkeypatch):
+    from radio_fw import gui_tab
+    from radio_contacts.engine import Ident
+    from test_ports import LISTED
+    monkeypatch.setattr(gui_tab.list_ports, "comports", lambda: list(LISTED))
+    root, tab = _window(800, server=True)
+    try:
+        tab._catalog, tab._catalog_loaded = _catalog_578(), True
+        tab.model_var.set("d578")
+        tab._on_model_change()
+        _settle(root)
+        assert tab.model is None and tab.rows == [] and tab.identify_box.winfo_ismapped()
+        assert tab.start_btn.instate(["disabled"])
+        assert list(tab.version_box.cget("values")) == []
+        tab._on_identified("d578", "D878UV2", "V100", "GD32", None)
+        assert tab.model is None and "D878 Series" in str(tab.identify_status.cget("text"))
+        monkeypatch.setattr(gui_tab._pc_engine, "identify",
+                            lambda port, on_log: Ident("D578UV2", "V101", 0, b""))
+        tab._identify_worker("d578", "/dev/cu.usbmodemC", "AT32")
+        tab._drain()
+        assert (tab.model, tab.radio_chip) == ("d578uv2", "AT32")
+        assert [r.kind for r in tab.rows] == spec.model_order("d578uv2")
+        assert list(tab.version_box.cget("values")) == ["Plus 2.08 AT", "Plus 2.07, build not given"]
+        _settle(root)
+        assert not tab.identify_body.winfo_ismapped()
+        assert str(tab.identify_summary.cget("text")).startswith(
+            "D578UV2 (2nd Gen), AT32 MCU (New) — identified from the radio")
+        tab._toggle_identify()
+        _settle(root)
+        assert tab.identify_body.winfo_ismapped() and not tab.identify_manual.winfo_ismapped()
+        assert not tab.manual_btn.winfo_ismapped(), "not even the button that would open it"
+        tab.model_var.set("d890")
+        tab._on_model_change()
+        tab.model_var.set("d578")
+        tab._on_model_change()
+        assert (tab.model, tab.radio_chip) == ("d578uv2", "AT32")
+    finally:
+        root.destroy()
+
+
+def test_a_d578_that_cannot_name_its_mcu_or_start_normally_is_chosen_by_hand(monkeypatch):
+    from radio_fw import gui_tab
+    from test_ports import LISTED
+    monkeypatch.setattr(gui_tab.list_ports, "comports", lambda: list(LISTED))
+    root, tab = _window(800, server=False)
+    try:
+        tab.model_var.set("d578")
+        tab._on_model_change()
+        _settle(root)
+        assert tab.manual_btn.winfo_ismapped() and not tab.identify_manual.winfo_ismapped(), \
+            "the manual choice waits for its button"
+        tab._on_identified("d578", "D578UV", "V100", None, None)
+        _settle(root)
+        assert tab.model is None and tab.identify_manual.winfo_ismapped()
+        assert tab.manual_model_var.get() == "D578UV (1st Gen)"
+        assert list(tab.manual_chip_box.cget("values")) == ["AT32 MCU (New)", "GD32 MCU (Old)"]
+        tab.manual_chip_var.set("GD32 MCU (Old)")
+        tab._on_manual_identity()
+        assert (tab.model, tab.radio_chip) == ("d578uv", "GD32")
+        assert [r.kind for r in tab.rows] == spec.model_order("d578uv")
+        assert str(tab.identify_summary.cget("text")) == "D578UV (1st Gen), GD32 MCU (Old) — chosen manually"
+        _settle(root)
+        assert not tab.identify_body.winfo_ismapped(), "folded once chosen"
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize("width", [760, 980])
+def test_the_manual_choice_opens_and_closes_from_its_button(monkeypatch, width):
+    from radio_fw import gui_tab
+    from test_ports import LISTED
+    monkeypatch.setattr(gui_tab.list_ports, "comports", lambda: list(LISTED))
+    root, tab = _window(800, width=width, server=False)
+    try:
+        tab.model_var.set("d578")
+        tab._on_model_change()
+        _settle(root)
+        btn = tab.manual_btn
+        assert btn.winfo_width() >= btn.winfo_reqwidth(), "the button is not squeezed"
+        assert btn.winfo_rootx() + btn.winfo_width() <= root.winfo_rootx() + root.winfo_width()
+        assert str(btn.cget("text")) == "Choose manually…" and not tab.identify_manual.winfo_ismapped()
+        btn.invoke()
+        _settle(root)
+        assert tab.identify_manual.winfo_ismapped() and str(btn.cget("text")) == "Hide manual choice"
+        btn.invoke()
+        _settle(root)
+        assert not tab.identify_manual.winfo_ismapped()
+        btn.invoke()
+        tab.manual_model_var.set("D578UV2 (2nd Gen)")
+        tab.manual_chip_var.set("AT32 MCU (New)")
+        tab._on_manual_identity()
+        tab._toggle_identify()
+        _settle(root)
+        assert btn.winfo_ismapped() and not tab.identify_manual.winfo_ismapped(), "closed after use"
+    finally:
+        root.destroy()
+
+
+def test_a_firmware_for_the_other_mcu_is_refused_once_the_radio_is_known(monkeypatch):
+    from radio_fw import gui_tab
+    from test_ports import LISTED
+    monkeypatch.setattr(gui_tab.list_ports, "comports", lambda: list(LISTED))
+    root, tab = _window(800, server=False)
+    try:
+        tab.model_var.set("d578")
+        tab._on_model_change()
+        tab._on_identified("d578", "D578UV2", "V101", "AT32", None)
+        fw = next(r for r in tab.rows if r.kind == spec.KIND_FW)
+        res = types.SimpleNamespace(source_names=["x.spi"], sha256="ab", frames=3, payload_bytes=96,
+                                    manifest={"ident_reply_prefix_ascii": "ID578UV2"})
+        fw.apply_compile(res, None)
+        assert fw.result is None and "needs the AT build" in fw.error
+        res.manifest = {"ident_reply_prefix_ascii": "I578UV2A"}
+        fw.apply_compile(res, None)
+        assert fw.result is res
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize("height", [800, 640])
+def test_an_identified_d578_keeps_its_targets_on_screen(monkeypatch, height):
+    from radio_fw import gui_tab
+    from test_ports import LISTED
+    monkeypatch.setattr(gui_tab.list_ports, "comports", lambda: list(LISTED))
+    root, tab = _window(height, server=True)
+    try:
+        tab._catalog, tab._catalog_loaded = _catalog_578(), True
+        tab.model_var.set("d578")
+        tab._on_model_change()
+        tab._on_identified("d578", "D578UV2", "V111", "AT32", None)
+        _settle(root)
+        assert len(tab.rows) == 4
+        hidden = [r.kind for r in tab.rows if not _visible(root, r.cb)]
+        assert not hidden and _visible(root, tab.start_btn), (height, hidden)
+    finally:
+        root.destroy()
+
+
+def test_the_prebuilt_versions_are_the_default_source():
+    root, tab = _window(800, server=True)
+    try:
+        assert tab.source_var.get() == "server"
+        assert [str(rb.cget("text")) for rb in tab._src_btns] == ["Prebuilt from AesApp", "My own files"]
+    finally:
+        root.destroy()
+
+
+def test_the_d878_button_identifies_the_generation_and_lists_only_its_versions(monkeypatch):
+    from radio_fw import gui_tab
+    from test_ports import LISTED
+    monkeypatch.setattr(gui_tab.list_ports, "comports", lambda: list(LISTED))
+    root, tab = _window(800, server=True)
+    try:
+        tab._catalog = [{"fwupdModel": m, "cpsVersion": "4.00", "label": label,
+                         "components": [{"kind": "fw"}, {"kind": "icon"}]}
+                        for m, label in (("d878uv2", "D878UVII 4.00"), ("d878uv", "D878UV 4.00"))]
+        tab._catalog_loaded = True
+        tab.model_var.set("d878")
+        tab._on_model_change()
+        _settle(root)
+        assert tab.model is None and list(tab.version_box.cget("values")) == []
+        tab.manual_btn.invoke()
+        _settle(root)
+        assert tab.identify_manual.winfo_ismapped()
+        assert not tab.manual_chip_box.winfo_ismapped(), "one MCU: nothing to choose"
+        tab._on_identified("d878", "D878UV2", "V100", None, None)
+        assert (tab.model, tab.radio_chip) == ("d878uv2", "GD32")
+        assert [r.kind for r in tab.rows] == spec.model_order("d878uv2")
+        assert list(tab.version_box.cget("values")) == ["D878UVII 4.00"]
+        assert str(tab.identify_summary.cget("text")) == \
+            "D878UVII (2nd Gen) — identified from the radio (D878UV2 V100)"
+        fw = next(r for r in tab.rows if r.kind == spec.KIND_FW)
+        res = types.SimpleNamespace(source_names=["x.spi"], sha256="ab", frames=3, payload_bytes=96,
+                                    manifest={"model": "d878uv", "ident_reply_prefix_ascii": "ID878UV"})
+        fw.apply_compile(res, None)
+        assert fw.result is None and "D878UV (1st Gen)" in fw.error
     finally:
         root.destroy()

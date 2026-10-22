@@ -106,8 +106,10 @@ def _restore():
 class CpsDevice:
 
     def __init__(self, kind, ident_hex=None, codeplug_mode=False, ack_finish=None,
-                 nak_frame=None, drop_ack_at=None):
+                 nak_frame=None, drop_ack_at=None, ignore_handshakes=0):
         self.kind = kind
+        self.ignore_handshakes = ignore_handshakes
+        self.handshakes = 0
         self.hs = b"PROGRAM" if kind == "icon" else b"UPDATE"
         self.ident = bytes.fromhex(ident_hex) if ident_hex else None
         self.codeplug = codeplug_mode
@@ -132,6 +134,9 @@ class CpsDevice:
                 if bytes(self.buf[:len(self.hs)]) != self.hs:
                     return
                 del self.buf[:len(self.hs)]
+                self.handshakes += 1
+                if self.handshakes <= self.ignore_handshakes:
+                    continue
                 if self.codeplug:
                     ser.feed(bytes.fromhex("515806"))
                     self.state = "dead"
@@ -737,6 +742,52 @@ def run_all():
                       "WRONG RADIO")
         assert len(dev.frames) == 0
     check("aprs wrong-radio abort (ident gate)", t_aprs_wrong_radio)
+
+    def _short_handshake(fn):
+        saved = engines.CPS_HANDSHAKE_RETRY_MS, engines.CPS_HANDSHAKE_TIMEOUT_MS
+        engines.CPS_HANDSHAKE_RETRY_MS, engines.CPS_HANDSHAKE_TIMEOUT_MS = 40, 80
+        try:
+            return fn()
+        finally:
+            engines.CPS_HANDSHAKE_RETRY_MS, engines.CPS_HANDSHAKE_TIMEOUT_MS = saved
+
+    def t_aprs_handshake_is_repeated():
+        from radio_fw.vendor import fwupd_cps
+        cdd, cdi, spi = _synth_cps_pkg(0x2000, bytes((i * 5) & 0xFF for i in range(96)))
+        artifact, manifest = fwupd_cps.compile_update("aprs", cdd, cdi, spi, model="d878uv2")
+        cap = Cap()
+        dev = CpsDevice("aprs", ident_hex=IDENT_IABORD, ignore_handshakes=1)
+        fake = _install(None, dev)
+        _short_handshake(lambda: engines.run("aprs", "COM_FAKE", artifact, manifest,
+                                             on_log=cap.on_log, on_progress=cap.on_progress))
+        assert bytes(fake.tx).startswith(b"UPDATEUPDATE\x02"), bytes(fake.tx[:16])
+        assert b"".join(dev.frames) == artifact
+        assert any("attempt 2 of 5" in m for _c, m in cap.logs), "the repeat is logged"
+    check("aprs board: an unanswered UPDATE is sent again", t_aprs_handshake_is_repeated)
+
+    def t_aprs_handshake_gives_up():
+        from radio_fw.vendor import fwupd_cps
+        cdd, cdi, spi = _synth_cps_pkg(0x2000, bytes(range(64)))
+        artifact, manifest = fwupd_cps.compile_update("aprs", cdd, cdi, spi, model="d878uv2")
+        dev = CpsDevice("aprs", ident_hex=IDENT_IABORD, ignore_handshakes=99)
+        fake = _install(None, dev)
+        _short_handshake(lambda: expect_raises(lambda: engines.run(
+            "aprs", "COM_FAKE", artifact, manifest, on_log=lambda *a: None,
+            on_progress=lambda *a: None), "after 5 tries"))
+        assert bytes(fake.tx) == b"UPDATE" * 5 and not dev.frames
+    check("aprs board: five unanswered UPDATEs end the attempt", t_aprs_handshake_gives_up)
+
+    def t_fw_handshake_is_sent_once():
+        from radio_fw.vendor import fwupd_cps
+        cdd, cdi, spi = _synth_cps_pkg(0x08004000, bytes(range(64)))
+        artifact, manifest = fwupd_cps.compile_update("fw", cdd, cdi, spi, model="d878uv2")
+        dev = CpsDevice("fw", ident_hex=IDENT_D878UV2, ignore_handshakes=1)
+        fake = _install(None, dev)
+        _short_handshake(lambda: expect_raises(lambda: engines.run(
+            "fw", "COM_FAKE", artifact, manifest, on_log=lambda *a: None,
+            on_progress=lambda *a: None), "Nothing was written"))
+        assert bytes(fake.tx) == b"UPDATE"
+    check("radio firmware: UPDATE is sent once", t_fw_handshake_is_sent_once)
 
     def _run_quiet(kind, artifact, manifest, cap=None):
         cap = cap or Cap()

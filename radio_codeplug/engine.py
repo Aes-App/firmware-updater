@@ -263,18 +263,15 @@ def write_codeplug(port_name: str,
         except (FirmwareUpdateError, OSError) as e:
             res.outcome = "verify_unavailable"
             res.message = f"Written and committed, but the radio could not be read back ({e})."
-            on_log(res.message, "er")
             return res
 
         if res.mismatches == 0:
             res.outcome = "success"
             res.message = f"Written, committed and verified ({res.checked:,} blocks read back)."
-            on_log(res.message, "ok")
         else:
             res.outcome = "verify_failed"
             res.message = (f"Committed, but {res.mismatches:,} of {res.checked:,} blocks read back "
                            "differently. Write it again before using the radio.")
-            on_log(res.message, "er")
         return res
 
     except AbortedError:

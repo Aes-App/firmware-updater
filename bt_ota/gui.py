@@ -17,7 +17,7 @@ from .client import MODELS, firmware_kind, make_client, scan_devices
 APP_TITLE = "AesApp Radio Updater"
 VENDOR = "AesApp Inc."
 WEBSITE = "https://aes.app/"
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 LOG_PREFIX = "[aesapp]"
 
 try:
@@ -659,7 +659,7 @@ def _diag() -> int:
     assert _ct.continent_of("DEU") == "EU" and len(_ct.COUNTRY_CODES) > 100
     print(f"DIAG OK: BT tab (bleak+so, auth sample={out.hex()}); "
           f"Radio tab (pyserial {serial.VERSION}, precompilers, {len(images)} step photos, "
-          f"models {'/'.join(spec.model_label(m) for m in spec.MODEL_ORDER)}); "
+          f"models {'/'.join(spec.choice_label(m) for m in spec.MODEL_ORDER)}); "
           f"Contacts tab (segments/catalog/engine/launch + local builder, "
           f"{len(_ct.COUNTRY_CODES)} countries, {len(_cb.RADIOS)} buildable models)")
     return 0
@@ -769,10 +769,6 @@ def main(url: str | None = None):
     nb = ttk.Notebook(root)
     nb.pack(fill="both", expand=True)
 
-    bt_page = ttk.Frame(nb)
-    nb.add(bt_page, text="Bluetooth Module Update")
-    app = App(root, container=bt_page)
-
     radio_page = ttk.Frame(nb)
     nb.add(radio_page, text="Radio and Boards Updates")
     boards = None
@@ -783,6 +779,10 @@ def main(url: str | None = None):
         ttk.Label(radio_page, foreground="#b00020", justify="left", wraplength=600,
                   text="Radio and Boards updates are unavailable in this build: " + str(e)
                        + "\n\nThe Bluetooth Module Update tab is unaffected.").pack(padx=16, pady=16)
+
+    bt_page = ttk.Frame(nb)
+    nb.add(bt_page, text="Bluetooth Module Update")
+    app = App(root, container=bt_page)
 
     contacts_page = ttk.Frame(nb)
     nb.add(contacts_page, text="Digital Contact Refresh")

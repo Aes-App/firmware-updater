@@ -14,19 +14,23 @@ it through an `aesapp://` link.
 
 | Tab | What it writes | Radios | Files it takes |
 |-----|----------------|--------|----------------|
+| **Radio and Boards Updates** | radio firmware, icons and fonts, and the boards each radio has; the BT01 microphone's firmware and icons | D168UV, every D578 (firmware 1.xx not yet tested on a real radio), D878UV, D878UVII, D890UV, BT01 microphone | `.spi` + `.CDD` + `.CDI` (the `.spi` is optional only for the D890UV and D878), `.ufw`, `.hex` |
 | **Bluetooth Module Update** | Bluetooth-module firmware, over Bluetooth | D878UV, D878UVII, every D578, D890UV | `.ufw` (D890UV), `.bin` (D578 and D878 families) |
-| **Radio and Boards Updates** | radio firmware, icons and fonts, and the boards each radio has; the BT01 microphone's firmware and icons | D168UV, D578UV(III) Plus (firmware 2.xx), D578UV(III) G/Pro (firmware 1.xx, not yet tested on a real radio), D878UV, D878UVII, D890UV, BT01 microphone | `.spi` + `.CDD` + `.CDI` (the `.spi` is optional only for the D890UV and D878), `.ufw`, `.hex` |
 | **Digital Contact Refresh** | the digital-contact database (the caller-ID names shown for DMR IDs) | D168UV, every D578, D878UV, D878UVII, D890UV | a list from your cps.aes.app account, or your own `user.csv` and `nxdn.csv` |
 | **Write Codeplug** | a codeplug prepared on cps.aes.app | D168UV, D578UV(III) Plus, D878UVII, D890UV | none — it arrives with the link |
 
 Notes worth knowing before you use it:
 
 - **The D578s go by firmware, not by name.** Firmware 2.xx (the radio answers
-  `D578UV2` over USB) runs on the D578UV PLUS and D578UVIII PLUS, the
-  **D578UV(III) Plus** button; firmware 1.xx (`D578UV`) on every other D578, the
-  UV, UVIII, UVG, UVIIIG, UV PRO and UVIII PRO, the **D578UV(III) G/Pro** button.
-  Both use one CPS. The radio's Device Info screen shows its version, and the
-  updater refuses a firmware built for the other line.
+  `D578UV2` over USB) runs on the D578UV PLUS and D578UVIII PLUS; firmware 1.xx
+  (`D578UV`) on every other D578, the UV, UVIII, UVG, UVIIIG, UV PRO and UVIII
+  PRO. Each comes with an AT32 or a GD32 MCU. One **D578 Series** button covers
+  them: the updater asks the radio, booted normally, which line it runs and reads
+  its MCU from its USB port, then offers only the firmware built for it (a radio
+  that will not start normally can be chosen by hand). The **D878 Series** button
+  does the same for the D878UV (`D878UV`) and D878UVII (`D878UV2`).
+- **Radio and Boards Updates** offers prebuilt, checksum-verified versions from
+  AesApp by default; **My own files** compiles the vendor's update files instead.
 
 - **Digital Contact Refresh** takes either a list you uploaded to cps.aes.app or
   a register download of your own, which it turns into the radio's contact

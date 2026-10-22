@@ -20,8 +20,7 @@ from . import client, engine
 
 _LOG_SOURCE = "Codeplug"
 
-_LOG_TAGS = {"tx": "#0b5fff", "rx": "#7a3fb0", "ok": "#127a2e", "er": "#b00020", "error": "#b00020",
-             "info": "#444"}
+_LOG_TAGS = {"er": "#b00020", "error": "#b00020", "done": "#127a2e"}
 _NO_SESSION_TEXT = ("Start from the codeplug you want to write on cps.aes.app — “Write Codeplug to "
                     "Radio”, then “Open in the desktop app”. If your browser did not hand the link "
                     "over, paste it below.")
@@ -48,7 +47,7 @@ class CodeplugWriteTab:
         self._busy = False
         self._writing = False
         self._abort: Optional[threading.Event] = None
-        self._t0: Optional[float] = None
+        self._phase_start: Optional[tuple] = None
         self._build()
         self.root.after(80, self._drain)
 
@@ -95,13 +94,13 @@ class CodeplugWriteTab:
             done, total, phase = payload
             pct = (done * 100.0 / total) if total else 0.0
             self.progress["value"] = pct
-            if phase in ("codeplug", "contacts") and self._t0 and done:
-                rate = done / max(1e-6, time.monotonic() - self._t0)
-                left = (total - done) / max(1e-6, rate)
+            if phase in ("codeplug", "contacts") and done:
+                left = self._eta(phase, done, total)
                 what = "codeplug" if phase == "codeplug" else "digital contact list"
                 self.wstatus.configure(
                     text=f"Writing the {what} — do not unplug the radio.  {pct:.0f}%  "
-                         f"({done:,}/{total:,} blocks, {_fmt_eta(left)} left)", foreground="#444")
+                         f"({done:,}/{total:,} blocks"
+                         + (f", {_fmt_eta(left)} left)" if left is not None else ")"), foreground="#444")
             elif phase == "verify":
                 self.wstatus.configure(text=f"Reading the codeplug back to verify it… {pct:.0f}%",
                                        foreground="#444")
@@ -115,6 +114,17 @@ class CodeplugWriteTab:
         elif kind == "write_err":
             msg, aborted = payload
             self._on_write_error(msg, aborted)
+
+    def _eta(self, phase: str, done: int, total: int) -> Optional[float]:
+        now = time.monotonic()
+        start = self._phase_start
+        if start is None or start[0] != phase or done < start[2]:
+            self._phase_start = (phase, now, done)
+            return None
+        _, t0, done0 = start
+        if done <= done0 or now <= t0:
+            return None
+        return (total - done) * (now - t0) / (done - done0)
 
     def _build(self):
         outer = ttk.Frame(self.parent, padding=10)
@@ -306,7 +316,7 @@ class CodeplugWriteTab:
             return
         self._last_port = port
         self._writing = True
-        self._t0 = time.monotonic()
+        self._phase_start = None
         self._abort = threading.Event()
         self.progress["value"] = 0
         self._refresh_write_state()
@@ -360,7 +370,7 @@ class CodeplugWriteTab:
         self.progress["value"] = 100 if res.outcome == "success" else self.progress["value"]
         colour = {"success": "#127a2e", "verify_unavailable": "#8a6d00"}.get(res.outcome, "#b00020")
         self.wstatus.configure(text=res.message, foreground=colour)
-        self._log(res.message, "ok" if res.outcome == "success" else "er")
+        self._log(res.message, {"success": "done", "verify_unavailable": "info"}.get(res.outcome, "er"))
         self.plan = None
         self.session_status.configure(
             text="Done — your project is editable again on cps.aes.app. Start another write there if "

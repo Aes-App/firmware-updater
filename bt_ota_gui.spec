@@ -114,6 +114,10 @@ app = BUNDLE(
         "CFBundleVersion": VERSION,
         "LSMinimumSystemVersion": "11.0",
         "NSHighResolutionCapable": True,
+        # Light appearance always. The tabs colour their text for a light window
+        # (the step instructions are dark red, the notes dark grey), and in the
+        # dark appearance those were all but invisible on the dark background.
+        "NSRequiresAquaSystemAppearance": True,
         "NSHumanReadableCopyright": "© AesApp Inc.",
         # macOS refuses Bluetooth to an app without these keys:
         "NSBluetoothAlwaysUsageDescription":

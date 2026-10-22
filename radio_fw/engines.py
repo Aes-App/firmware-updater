@@ -213,6 +213,8 @@ CPS_ACK = 0x06
 CPS_FRAME_LEN = 40
 CPS_BAUD = 921600
 CPS_HANDSHAKE_TIMEOUT_MS = 3000
+CPS_HANDSHAKE_RETRY_MS = 600
+CPS_HANDSHAKE_ATTEMPTS = {"aprs": 5}
 CPS_ACK_TIMEOUT_MS = 2000
 CPS_FIRST_ACK_TIMEOUT_MS = 5000
 CPS_FINISH_TIMEOUT_MS = 2000
@@ -275,10 +277,26 @@ def validate_cps_package(kind: str, artifact: bytes, manifest: dict) -> tuple[in
 def _cps_handshake(kind: str, link: SerialLink, manifest: dict, on_log):
     hs = manifest["handshake_ascii"]
     tx = hs.encode("ascii")
-    on_log('TX "' + hs + '" (' + _hex(tx) + ")", "tx")
-    link.send(tx)
-    first = link.read_exactly(1, CPS_HANDSHAKE_TIMEOUT_MS)
+    attempts = CPS_HANDSHAKE_ATTEMPTS.get(kind, 1)
+    for attempt in range(1, attempts + 1):
+        on_log('TX "' + hs + '" (' + _hex(tx) + ")"
+               + (" — attempt " + str(attempt) + " of " + str(attempts) if attempt > 1 else ""), "tx")
+        link.send(tx)
+        last = attempt == attempts
+        try:
+            first = link.read_exactly(1, CPS_HANDSHAKE_TIMEOUT_MS if last else CPS_HANDSHAKE_RETRY_MS)
+            break
+        except ReplyTimeoutError:
+            if last:
+                raise ReplyTimeoutError(
+                    'no reply to "' + hs + '"' + (" after " + str(attempts) + " tries" if attempts > 1 else "")
+                    + " — the radio is not in update mode, or has left it. Nothing was written. Turn "
+                    "the radio off, enter the update mode again and retry.")
+            on_log("no reply to \"" + hs + "\" within " + str(CPS_HANDSHAKE_RETRY_MS) + " ms; sending it again", "info")
     on_log("RX " + _hex(first), "rx")
+    if attempt > 1:
+        time.sleep(0.05)
+        link.flush()
 
     if first[0] == CODEPLUG_REPLY[0]:
         tail = b""
@@ -305,7 +323,7 @@ def _cps_handshake(kind: str, link: SerialLink, manifest: dict, on_log):
         if ident[15] != CPS_ACK:
             raise FirmwareUpdateError(
                 "the identity frame did not end in 06 (" + _hex(ident) + ") — unreadable "
-                "bootloader identity, refusing to write.")
+                "bootloader identity, refusing to write. Nothing was written.")
         want = manifest.get("ident_reply_prefix_ascii")
         got = _ident_model(ident)
         if want and got != want:
@@ -415,7 +433,7 @@ def _run_cps(kind: str, port_name: str, artifact: bytes, manifest: dict,
                 " — the capture shows this component ACKs it; every data frame was ACKed, so the "
                 "write itself completed" if profile["finish_acked"]
                 else " — expected, this component never ACKs it"),
-                "er" if profile["finish_acked"] else "info")
+                "info")
         on_log("WARNING: this protocol has no read-back or verify step. \"Done\" means every frame "
                "was acknowledged, not that the image was independently checked — confirm the version "
                "on the radio.", "info")
@@ -458,7 +476,7 @@ def _nr_read_frame(link: SerialLink, timeout_ms: int) -> dict:
         link.consume(2)
         bad_crc += 1
         link.log(why + " — dropping it and resyncing; the board re-requests anything it does not "
-                 "get (#" + str(bad_crc) + ")", "er")
+                 "get (#" + str(bad_crc) + ")", "info")
         if bad_crc > NR_MAX_BAD_CRC:
             raise FirmwareUpdateError(
                 str(bad_crc) + " NR frames in a row were unusable — the link is corrupt, not merely "
@@ -477,7 +495,7 @@ def _nr_read_frame(link: SerialLink, timeout_ms: int) -> dict:
                     "no AA 55 frame in " + str(dropped) + " bytes of RX — the link is at the wrong baud "
                     "or the board is not in update mode.")
         if dropped:
-            link.log("resynchronised after dropping " + str(dropped) + " stray byte(s)", "er")
+            link.log("resynchronised after dropping " + str(dropped) + " stray byte(s)", "info")
         link.ensure(4, left())
         length = link._buf[2] | (link._buf[3] << 8)
         if length < 1 or length > NR_MAX_DEVICE_PAYLOAD:
@@ -652,17 +670,17 @@ def _run_nr(port_name: str, artifact: bytes, manifest: dict, on_log, on_progress
                     on_log("the board reports 0 bytes to flash — the update agent found nothing to write. "
                            "This normally means the NR board is ALREADY on this firmware version; the "
                            "session will end cleanly WITHOUT re-flashing. Verify the version on the radio.",
-                           "er")
+                           "info")
                 elif notified and expect and notified != expect:
                     on_log("the board announced " + str(notified) + " image bytes but this .ufw derives "
                            + str(expect) + " — it drives the pull so the flash continues, but this may "
-                           "not be the package it expects", "er")
+                           "not be the package it expects", "info")
                 on_log("TX " + _hex(NR_LEN_NOTIFY_REPLY) + " (LEN_NOTIFY reply)", "tx")
                 link.send(NR_LEN_NOTIFY_REPLY)
 
             elif op == NR_OP["ALIVE"]:
                 on_log("RX " + _hex(raw) + " UPDATE_ALIVE — no reply is known for this frame "
-                       "(never seen in the reference capture); continuing", "er")
+                       "(never seen in the reference capture); continuing", "info")
 
             else:
                 raise FirmwareUpdateError(
@@ -676,7 +694,7 @@ def _run_nr(port_name: str, artifact: bytes, manifest: dict, on_log, on_progress
                    + (" and reported 0 bytes to flash" if announced_len == 0 else "")
                    + " (a full flash pulls ~" + str(flash_len) + "). This is the expected result when "
                    "the board is already on this version — verify the NR version on the radio. If it is "
-                   "on an OLDER version, re-check the .ufw and that the board is in NR update mode.", "er")
+                   "on an OLDER version, re-check the .ufw and that the board is in NR update mode.", "info")
         else:
             on_log("NR update complete: " + str(served_bytes) + " unique bytes served over " + str(reads)
                    + " read requests (planned " + str(total) + ")", "ok")
@@ -837,7 +855,7 @@ def _run_sct(port_name: str, artifact: bytes, manifest: dict, on_log, on_progres
                 except FirmwareUpdateError as e:
                     if lenient:
                         on_log(str(e) + " — but the flash itself is complete and acknowledged; "
-                               "only the closing parity restore went unanswered. Continuing.", "er")
+                               "only the closing parity restore went unanswered. Continuing.", "info")
                         r = None
                         break
                     if i == 0:
@@ -855,12 +873,12 @@ def _run_sct(port_name: str, artifact: bytes, manifest: dict, on_log, on_progres
                 if (_sct_is_redo_request(r) and kind in SCT_RESENDABLE
                         and attempt == 1):
                     on_log("RX " + _hex(r) + " — the " + chip + " asked for frame " + str(i)
-                           + " (" + kind + ") again; resending once", "er")
+                           + " (" + kind + ") again; resending once", "info")
                     link.send(frame)
                     continue
                 if lenient:
                     on_log("RX " + _hex(r) + " — unexpected reply to the closing parity restore. "
-                           "The flash itself is complete and acknowledged; continuing.", "er")
+                           "The flash itself is complete and acknowledged; continuing.", "info")
                     break
                 raise FirmwareUpdateError(
                     "frame " + str(i) + " (" + kind + "): expected "

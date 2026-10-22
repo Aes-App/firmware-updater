@@ -37,7 +37,7 @@ def test_bad_links_are_refused(url, hint):
 @pytest.mark.parametrize("server, expect", [
     ("https://cps.aes.app", "https://cps.aes.app"),
     ("https://cps.aes.app/", "https://cps.aes.app"),
-    ("https://dev-cps.aes.app:8443", "https://dev-cps.aes.app:8443"),
+    ("https://example.aes.app:8443", "https://example.aes.app:8443"),
     ("https://aes.app", "https://aes.app"),
     ("http://localhost:8000", "http://localhost:8000"),
     ("http://127.0.0.1:8000/", "http://127.0.0.1:8000"),
