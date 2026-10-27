@@ -12,7 +12,7 @@ import webbrowser
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
 from . import update_check
-from .client import MODELS, firmware_kind, make_client, scan_devices
+from .client import MODELS, bluetooth_hint, firmware_kind, make_client, scan_devices
 
 APP_TITLE = "AesApp Radio Updater"
 VENDOR = "AesApp Inc."
@@ -500,8 +500,9 @@ class App:
             cands = await scan_devices(timeout=6.0)
             self._post("scan_result", cands)
         except Exception as e:
+            hint = bluetooth_hint(e)
             self._post("log", f"{LOG_PREFIX} scan error: {e}")
-            self._post("error", f"scan failed: {e}")
+            self._post("error", f"scan failed: {e}" + (f" — {hint}" if hint else ""))
         finally:
             self._post("scan_done")
 
@@ -598,7 +599,8 @@ class App:
             self._post("done")
         except Exception as e:
             self._post("log", f"{LOG_PREFIX} ERROR: {e}\n{traceback.format_exc()}")
-            self._post("error", str(e))
+            hint = bluetooth_hint(e)
+            self._post("error", str(e) + (f" — {hint}" if hint else ""))
         finally:
             try:
                 await client.disconnect()
@@ -627,6 +629,9 @@ def _diag() -> int:
     elif sys.platform == "win32":
         import bleak.backends.winrt.scanner
         import bleak.backends.winrt.client
+    elif sys.platform.startswith("linux"):
+        import bleak.backends.bluezdbus.scanner
+        import bleak.backends.bluezdbus.client
     from .jl_auth import AuthEmulator
     emu = AuthEmulator()
     out = emu.get_encrypted_auth_data(bytes([0] + list(range(1, 17))))
@@ -686,6 +691,24 @@ def _install_diagnostics():
             pass
 
 
+def _restore_child_env() -> None:
+    if not (getattr(sys, "frozen", False) and sys.platform.startswith("linux")):
+        return
+    orig = os.environ.pop("LD_LIBRARY_PATH_ORIG", None)
+    if orig is not None:
+        os.environ["LD_LIBRARY_PATH"] = orig
+        return
+    mei = getattr(sys, "_MEIPASS", None)
+    cur = os.environ.get("LD_LIBRARY_PATH")
+    if mei and cur:
+        keep = [p for p in cur.split(os.pathsep)
+                if p and os.path.realpath(p) != os.path.realpath(mei)]
+        if keep:
+            os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(keep)
+        else:
+            del os.environ["LD_LIBRARY_PATH"]
+
+
 def launch_url_from_argv(argv) -> str | None:
     for a in argv or ():
         if isinstance(a, str) and a.strip().lower().startswith("aesapp:"):
@@ -697,6 +720,7 @@ def main(url: str | None = None):
     if os.environ.get("BT_OTA_DIAG"):
         raise SystemExit(_diag())
     _install_diagnostics()
+    _restore_child_env()
 
     launch_mod = None
     instance = None
@@ -707,9 +731,12 @@ def main(url: str | None = None):
             return
     except Exception:
         instance = None
-    if launch_mod is not None and sys.platform == "win32" and getattr(sys, "frozen", False):
+    if launch_mod is not None and getattr(sys, "frozen", False):
         try:
-            launch_mod.register_windows_scheme()
+            if sys.platform == "win32":
+                launch_mod.register_windows_scheme()
+            elif sys.platform.startswith("linux"):
+                launch_mod.register_linux_scheme(icon_src=_asset_path("AesApp_icon.png"))
         except Exception:
             pass
 
@@ -719,6 +746,11 @@ def main(url: str | None = None):
     _set_window_icon(root)
     try:
         ttk.Style().theme_use("aqua")
+    except tk.TclError:
+        pass
+    try:
+        if root.tk.call("tk", "windowingsystem") == "x11":
+            ttk.Style().theme_use("clam")
     except tk.TclError:
         pass
 

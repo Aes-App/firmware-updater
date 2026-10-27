@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import errno
+import sys
+
 CHIP_VIDS = {0x0483: "STM32", 0x28E9: "GD32", 0x2E3C: "AT32"}
 CHIPS = ("STM32", "GD32", "AT32")
 
@@ -30,3 +33,13 @@ def label(port) -> str:
     if chip and chip not in desc.upper():
         desc = (desc + " " if desc else "") + "[" + chip + "]"
     return port.device + ("  —  " + desc if desc else "")
+
+
+def open_hint(exc, platform: str | None = None) -> str | None:
+    platform = platform or sys.platform
+    if platform.startswith("linux") and getattr(exc, "errno", None) == errno.EACCES:
+        return ("this user may not open the radio's port. Install the udev rule that comes "
+                "with the app (60-aesapp-radio.rules), or join the dialout group: "
+                "sudo usermod -aG dialout $USER, then log out and back in "
+                "(the group is uucp on Arch)")
+    return None

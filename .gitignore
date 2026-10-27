@@ -6,6 +6,7 @@ __pycache__/
 # Virtualenvs
 .venv/
 .venv-win*/
+.venv-linux-*/
 .python-*/
 venv/
 
@@ -13,6 +14,7 @@ venv/
 build/
 dist/
 build-win-*/
+build-linux-*/
 *.spec.bak
 bt_ota/assets/AesApp.iconset/
 

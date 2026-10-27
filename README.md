@@ -4,7 +4,7 @@ A desktop app for updating **AnyTone radios** — Bluetooth-module firmware over
 the computer's own Bluetooth adapter, and main firmware, boards, contacts and
 codeplugs over a USB cable. No Android phone and no vendor CPS required.
 
-Ships as a macOS `.app`, a Windows `.exe` and a CLI. It works on its own, and
+Ships as a macOS `.app`, a Windows `.exe`, a Linux executable and a CLI. It works on its own, and
 pairs with [cps.aes.app](https://cps.aes.app), which can hand a job straight to
 it through an `aesapp://` link.
 
@@ -98,6 +98,35 @@ runs the fast test suites first, then checks the built archive really contains
 the lazily-imported tabs (`tools/check_frozen_modules.py`). `-SkipTests` skips
 the first of those and says so.
 
+**Linux**
+
+```bash
+./build_linux.sh --docker x86_64    # from macOS or Linux, with Docker
+./build_linux.sh --docker aarch64   # Raspberry Pi 4/5 (64-bit), ARM machines
+# -> dist/AesApp-Radio-Updater-linux-<arch>.tar.gz   (the executable + the udev rule)
+```
+
+The build runs in an Ubuntu 22.04 container with Python 3.12 and Ubuntu's Tk, so
+the executable starts on glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Raspberry
+Pi OS bookworm and later) and draws with the desktop's own fonts. On a Linux box
+with a Tk-enabled Python 3.12, `./build_linux.sh --python /usr/bin/python3.12`
+builds without Docker. Like the Windows script it runs the fast test suites
+first and checks the frozen archive afterwards; it also runs the binary's own
+self-test and prints the glibc it needs.
+
+On Linux the radio's USB serial port belongs to the `dialout` group. Either
+install the udev rule that ships beside the executable, which also keeps
+ModemManager from probing the radio:
+
+```bash
+sudo cp 60-aesapp-radio.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+or `sudo usermod -aG dialout $USER` and log in again. The Bluetooth tab uses
+BlueZ. The first launch adds the app to the desktop's menu and registers it for
+`aesapp://` links.
+
 `python make_assets.py "/path/to/AesApp-logo.jpg"` regenerates the icons.
 
 ## Layout
@@ -128,7 +157,10 @@ tests/                  pytest; fixtures/ holds the byte-for-byte contact oracle
 tools/                  generators and build checks
 bt_ota_gui.spec         PyInstaller — macOS .app
 bt_ota_gui_win.spec     PyInstaller — Windows .exe
+bt_ota_gui_linux.spec   PyInstaller — Linux executable
 build_windows.ps1       Windows build driver
+build_linux.sh          Linux build driver
+60-aesapp-radio.rules   udev rule: serial access for the radios, ModemManager kept off
 sign_and_notarize.sh    macOS sign + notarize + staple
 ```
 

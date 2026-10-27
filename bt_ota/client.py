@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from typing import Callable, Optional
 
 from bleak import BleakScanner
@@ -33,6 +34,23 @@ def make_client(firmware_path: str, *, kind: Optional[str] = None, use_auth: boo
     if kind == "jieli":
         return AnytoneBtOta(auth_lib=auth_lib, use_auth=use_auth, log_cb=log_cb), kind
     raise ValueError(f"unknown firmware type for {firmware_path!r} (expected .ufw or .bin)")
+
+
+def bluetooth_hint(exc, platform: Optional[str] = None) -> Optional[str]:
+    platform = platform or sys.platform
+    if not platform.startswith("linux"):
+        return None
+    text = str(exc)
+    if "dbus-org.bluez.service" in text or ("ServiceUnknown" in text and "org.bluez" in text):
+        return ("the Bluetooth service is not running. Start it with: "
+                "sudo systemctl enable --now bluetooth")
+    reason = getattr(getattr(exc, "reason", None), "name", "")
+    if reason == "NO_BLUETOOTH":
+        return ("Linux sees no Bluetooth adapter. Plug in a USB Bluetooth adapter "
+                "(a virtual machine needs one passed through to it)")
+    if reason == "POWERED_OFF":
+        return "Bluetooth is off. Turn it on, or: rfkill unblock bluetooth && bluetoothctl power on"
+    return None
 
 
 async def scan_devices(timeout: float = 8.0, name_filter: Optional[str] = None):

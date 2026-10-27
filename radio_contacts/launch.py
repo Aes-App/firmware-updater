@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 import re
 import secrets
+import shutil
 import socket
+import subprocess
 import sys
 import threading
 from dataclasses import dataclass
@@ -96,6 +98,66 @@ def register_windows_scheme(exe_path: Optional[str] = None, winreg_module=None) 
         return True
     except OSError:
         return False
+
+
+DESKTOP_ID = "aesapp-radio-updater.desktop"
+
+
+def _desktop_exec_arg(path: str) -> str:
+    quoted = "".join("\\" + c if c in '\\"`$' else c for c in path).replace("%", "%%")
+    return '"' + quoted.replace("\\", "\\\\") + '"'
+
+
+def _run_quietly(argv) -> None:
+    try:
+        subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def register_linux_scheme(exe_path: Optional[str] = None, icon_src: Optional[str] = None,
+                          data_home: Optional[str] = None, run=_run_quietly) -> bool:
+    exe = exe_path or (sys.executable if getattr(sys, "frozen", False) else None)
+    if not exe:
+        return False
+    try:
+        base = data_home or os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+        apps = os.path.join(base, "applications")
+        entry_path = os.path.join(apps, DESKTOP_ID)
+        lines = [
+            "[Desktop Entry]",
+            "Type=Application",
+            "Name=AesApp Radio Updater",
+            "Comment=Firmware, Bluetooth module, contacts and codeplugs for AnyTone radios",
+            "Exec=" + _desktop_exec_arg(exe) + " %u",
+            "Terminal=false",
+            "Categories=Network;HamRadio;",
+            "MimeType=x-scheme-handler/" + SCHEME + ";",
+        ]
+        if icon_src and os.path.isfile(icon_src):
+            icon = os.path.join(base, "aesapp-radio-updater", "icon.png")
+            if not os.path.isfile(icon) or os.path.getsize(icon) != os.path.getsize(icon_src):
+                os.makedirs(os.path.dirname(icon), exist_ok=True)
+                shutil.copyfile(icon_src, icon)
+            lines.insert(5, "Icon=" + icon)
+        text = "\n".join(lines) + "\n"
+        try:
+            with open(entry_path, encoding="utf-8") as f:
+                if f.read() == text:
+                    return True
+        except OSError:
+            pass
+        os.makedirs(apps, exist_ok=True)
+        tmp = entry_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, entry_path)
+    except OSError:
+        return False
+    run(["xdg-mime", "default", DESKTOP_ID, "x-scheme-handler/" + SCHEME])
+    run(["update-desktop-database", apps])
+    return True
 
 
 class SingleInstance:

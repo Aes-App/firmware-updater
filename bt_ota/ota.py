@@ -91,6 +91,9 @@ class AnytoneBtOta:
         self._address = self.client.address
         self._log(f"connected: {self.client.address}")
         try:
+            acquire = getattr(getattr(self.client, "_backend", None), "_acquire_mtu", None)
+            if acquire is not None:
+                await acquire()
             self._mtu = max(self.client.mtu_size, 23)
         except Exception:
             self._mtu = 23

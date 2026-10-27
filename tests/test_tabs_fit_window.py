@@ -134,8 +134,7 @@ def test_the_port_picker_follows_the_photo_without_a_blank_line(monkeypatch):
 
 
 def test_the_step_photo_gives_way_before_the_buttons_do():
-    heights = {}
-    for h in (1000, 640):
+    def photo(h):
         root, tab = _window(h)
         try:
             _walk(root, tab)
@@ -144,12 +143,13 @@ def test_the_step_photo_gives_way_before_the_buttons_do():
             tab.step = KINDS.index(spec.KIND_SCT)
             tab._show_step()
             _settle(root)
-            heights[h] = tab._step_img.height()
-            natural = tab._step_natural.height()
+            return tab._step_img.height(), tab._step_natural.height(), root.winfo_reqheight()
         finally:
             root.destroy()
-    assert heights[1000] == natural, "a tall window must show the photo at full size"
-    assert heights[640] < natural, "a short window must shrink the photo"
+    tall, natural, wanted = photo(1000)
+    short, _, _ = photo(wanted - 185)
+    assert tall == natural, "a tall window must show the photo at full size"
+    assert short < natural, "a short window must shrink the photo"
 
 
 def test_long_labels_wrap_to_the_window_not_to_a_fixed_width():
@@ -248,10 +248,11 @@ def test_the_log_gives_way_faster_than_the_country_tree():
         _settle(root)
         tree_natural = tab.tree.winfo_reqheight()
         log_natural = tab.log.frame.winfo_reqheight()
+        wanted = root.winfo_reqheight()
     finally:
         root.destroy()
 
-    root, tab = _contact_window(850)
+    root, tab = _contact_window(wanted - 45)
     try:
         _local(tab)
         _settle(root)

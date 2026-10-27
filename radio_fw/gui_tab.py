@@ -122,6 +122,12 @@ def _load_step_image(name: str) -> tk.PhotoImage | None:
     return img
 
 
+def _identify_failure(exc) -> str:
+    advice = "" if _ports.open_hint(exc) else ("\nCheck it is on normally and that this is its port, "
+                                               "or press “Choose manually…”.")
+    return "Could not identify the radio: " + str(exc) + advice
+
+
 def _fw_ident(bundle: dict) -> str | None:
     for c in bundle.get("components") or []:
         if c.get("kind") == spec.KIND_FW:
@@ -815,6 +821,7 @@ class RadioBoardsTab:
         self._fit_pending = False
         self.wizard.bind("<Configure>", lambda _e: self._schedule_fit())
         self.wizard.bind("<Configure>", lambda _e: self._fit_track(), add="+")
+        self.wizard.bind("<Map>", lambda _e: self._schedule_fit(), add="+")
         self.wimage = ttk.Label(body)
         self.wimage.pack(side="left", anchor="n", padx=(0, 12))
         self.winstr = ttk.Label(body, justify="left", wraplength=380,
@@ -882,6 +889,7 @@ class RadioBoardsTab:
         self._mcu_label = ttk.Label(_mcu_body, image=self._mcu_img if self._mcu_img else "")
         self._mcu_label.pack(side="left", anchor="n", padx=(0, 12))
         self.done.bind("<Configure>", lambda _e: self._schedule_fit())
+        self.done.bind("<Map>", lambda _e: self._schedule_fit(), add="+")
         self.mcu_reset_lbl = ttk.Label(_mcu_body, justify="left", wraplength=420,
                                        foreground="#7a1020", font=("", 11))
         self.mcu_reset_lbl.pack(side="left", anchor="n", fill="x", expand=True)
@@ -1194,7 +1202,7 @@ class RadioBoardsTab:
             ident = _pc_engine.identify(port, on_log=lambda *_a: None)
             self._post("identified", (family, ident.model, ident.version, chip, None))
         except Exception as e:
-            self._post("identified", (family, None, None, chip, str(e)))
+            self._post("identified", (family, None, None, chip, _identify_failure(e)))
 
     def _on_identified(self, family, pc_model, version, chip, error):
         self._identifying = False
@@ -1203,8 +1211,7 @@ class RadioBoardsTab:
             return
         self._identify_open = True
         if error:
-            self._identify_note("Could not identify the radio: " + error + "\nCheck it is on normally "
-                                "and that this is its port, or press “Choose manually…”.", "#b00020")
+            self._identify_note(error, "#b00020")
             self._layout_identify()
             return
         model = spec.identified_model(family, pc_model)

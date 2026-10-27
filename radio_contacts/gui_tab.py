@@ -365,7 +365,7 @@ class ContactRefreshTab:
         self.log = scrolledtext.ScrolledText(outer, height=3, wrap="word", state="disabled")
 
         outer.columnconfigure(0, weight=1)
-        follow_width(intro, outer, reserve=8)
+        follow_width(intro, outer, reserve=20)
         follow_width(self.wstatus, outer, reserve=8)
         intro.grid(row=_ROW_INTRO, column=0, sticky="ew", pady=(0, 8))
         src.grid(row=_ROW_SOURCE, column=0, sticky="ew", pady=(0, 6))

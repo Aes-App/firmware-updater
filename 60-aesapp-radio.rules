@@ -1,0 +1,17 @@
+# AnyTone radios on Linux: let the logged-in user open the radio's USB serial
+# port without joining the dialout group, and keep ModemManager away from it.
+# ModemManager probes every new CDC-ACM port it sees with AT commands, and a
+# radio in update mode would read them as data.
+#
+#   sudo cp 60-aesapp-radio.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# then unplug the radio and plug it back in.
+#
+# The vendor ids are the radios' MCU vendors -- STM32, GD32, AT32 -- the same
+# table radio_fw/ports.py sorts the port list by. The number in the file name
+# matters: uaccess only takes effect in a rule that runs before 73-seat-late,
+# and ID_MM_DEVICE_IGNORE before ModemManager's own 77-mm-* rules.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ENV{ID_MM_DEVICE_IGNORE}="1", TAG+="uaccess"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="28e9", ENV{ID_MM_DEVICE_IGNORE}="1", TAG+="uaccess"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2e3c", ENV{ID_MM_DEVICE_IGNORE}="1", TAG+="uaccess"

@@ -5,6 +5,8 @@ import time
 
 import serial
 
+from . import ports
+
 from .vendor import fwupd_nr as _nr
 
 VERSION = "1.0.0"
@@ -91,7 +93,15 @@ class SerialLink:
         ser.dsrdtr = False
         ser.dtr = dtr
         ser.rts = rts
-        ser.open()
+        try:
+            ser.open()
+        except serial.SerialException as e:
+            hint = ports.open_hint(e)
+            if not hint:
+                raise
+            err = serial.SerialException(str(e) + " — " + hint)
+            err.errno = e.errno
+            raise err from e
         try:
             ser.dtr = dtr
             ser.rts = rts

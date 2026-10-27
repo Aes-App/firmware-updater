@@ -31,12 +31,12 @@ def test_the_d890_photos_are_not_shown_for_other_keypads():
     assert spec.reset_image("d878uv2") == "D878_Reset.png"
 
 
-def test_every_step_photo_exists_and_both_builds_ship_it():
+def test_every_step_photo_exists_and_every_build_ships_it():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     assert len(spec.step_photos()) == 20
     for name in sorted(spec.step_photos()):
         assert os.path.exists(os.path.join(root, "radio_fw", "assets", name)), name
-    for n in ("bt_ota_gui.spec", "bt_ota_gui_win.spec"):
+    for n in ("bt_ota_gui.spec", "bt_ota_gui_win.spec", "bt_ota_gui_linux.spec"):
         assert 'glob.glob("radio_fw/assets/*.png")' in open(os.path.join(root, n)).read(), n
 
 

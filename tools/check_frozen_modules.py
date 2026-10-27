@@ -11,11 +11,12 @@ It reads the frozen archive rather than running the app: a GUI cannot be smoke
 tested on a build box, and "it launched" would not prove the tab a user has not
 clicked yet is present.
 
-Both layouts are handled -- the Windows onefile .exe and the macOS .app, whose
-PYZ lives inside Contents/MacOS/<name>.
+Every layout is handled -- the Windows .exe and the Linux executable (both
+onefile) and the macOS .app, whose PYZ lives inside Contents/MacOS/<name>.
 
     python tools/check_frozen_modules.py "dist/AesApp Radio Updater.exe"
     python tools/check_frozen_modules.py "dist/AesApp Radio Updater.app"
+    python tools/check_frozen_modules.py dist/AesApp-Radio-Updater-linux-x86_64/aesapp-radio-updater
 
 Exit codes are deliberately three-way, because "a module is missing" and "I
 could not look" are different answers and a build script should treat them

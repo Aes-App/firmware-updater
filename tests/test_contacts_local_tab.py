@@ -455,7 +455,7 @@ def test_a_wheel_notch_moves_the_picker_by_rows_not_pages(tab, monkeypatch):
     assert moved == [(-1, "units"), (1, "units")]
 
     moved.clear()
-    tab._on_wheel(_Wheel(400))
+    tab._on_wheel(_Wheel(1200))
     assert moved == [(-gt._WHEEL_MAX_ROWS, "units")]
 
     moved.clear()

@@ -111,6 +111,46 @@ def test_windows_registration_never_raises():
     assert launch.register_windows_scheme(None, winreg_module=FakeWinreg()) is False
 
 
+def _entry(data_home):
+    with open(os.path.join(data_home, "applications", launch.DESKTOP_ID), encoding="utf-8") as f:
+        return dict(line.split("=", 1) for line in f.read().splitlines() if "=" in line)
+
+
+def test_linux_scheme_registration_is_idempotent(tmp_path):
+    icon = tmp_path / "bundle" / "AesApp_icon.png"
+    icon.parent.mkdir()
+    icon.write_bytes(b"\x89PNG fake")
+    ran = []
+    home = str(tmp_path / "share")
+    exe = "/home/op/Downloads/AesApp Radio Updater/aesapp-radio-updater"
+    assert launch.register_linux_scheme(exe, str(icon), data_home=home, run=ran.append) is True
+    e = _entry(home)
+    assert e["Exec"] == '"/home/op/Downloads/AesApp Radio Updater/aesapp-radio-updater" %u'
+    assert e["MimeType"] == "x-scheme-handler/aesapp;"
+    assert e["Icon"] == os.path.join(home, "aesapp-radio-updater", "icon.png")
+    assert open(e["Icon"], "rb").read() == b"\x89PNG fake"
+    assert ["xdg-mime", "default", launch.DESKTOP_ID, "x-scheme-handler/aesapp"] in ran
+    n = len(ran)
+    assert launch.register_linux_scheme(exe, str(icon), data_home=home, run=ran.append) is True
+    assert len(ran) == n
+    assert launch.register_linux_scheme("/opt/aesapp/aesapp-radio-updater", str(icon),
+                                        data_home=home, run=ran.append) is True
+    assert _entry(home)["Exec"] == '"/opt/aesapp/aesapp-radio-updater" %u'
+    assert len(ran) > n
+
+
+def test_linux_exec_quoting_survives_the_awkward_characters():
+    assert launch._desktop_exec_arg('/a "b"/$c`d`/e\\f/100%') == \
+        '"/a \\\\"b\\\\"/\\\\$c\\\\`d\\\\`/e\\\\\\\\f/100%%"'
+
+
+def test_linux_registration_never_raises(tmp_path):
+    blocker = tmp_path / "share"
+    blocker.write_text("a file where the directory should be")
+    assert launch.register_linux_scheme("/opt/x", data_home=str(blocker), run=lambda a: None) is False
+    assert launch.register_linux_scheme(None, data_home=str(tmp_path), run=lambda a: None) is False
+
+
 def test_second_launch_forwards_its_link_to_the_running_instance(tmp_path):
     primary = launch.SingleInstance(str(tmp_path))
     got = []
