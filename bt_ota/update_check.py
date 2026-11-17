@@ -56,8 +56,17 @@ def is_newer(latest: str, current: str) -> bool:
     return (an, aflag, apre) > (bn, bflag, bpre)
 
 
+def _open(req: urllib.request.Request, timeout: float):
+    try:
+        from radio_fw.download import _ssl_context
+        ctx = _ssl_context()
+    except Exception:
+        ctx = None
+    return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+
+
 def check(current: str, url: str = API_URL, timeout: float = _TIMEOUT,
-          opener=urllib.request.urlopen) -> Result:
+          opener=_open) -> Result:
     req = urllib.request.Request(url, headers={
         "User-Agent": "AesApp-Radio-Updater/%s" % current,
         "Accept": "application/vnd.github+json",

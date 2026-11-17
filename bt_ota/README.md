@@ -83,7 +83,7 @@ WICED (`bt_ota/client.py`).
 ```bash
 pip install -r requirements.txt        # bleak + pyserial (unicorn is optional: validate only)
 # one-time: pull the auth lib from the OTA APK you already have
-python -m bt_ota.extract_auth_lib "OTA V1.7.2.apk"
+python -m bt_ota.extract_auth_lib jl_bt_ota_V1.9.2-release.aar   # JieLi's Apache-2.0 SDK; an OTA APK works too
 ```
 
 ## Use
@@ -193,4 +193,4 @@ fallback, but it's untested).
 | `ota.py`     | `bleak` BLE client + OTA state machine |
 | `__main__.py`| CLI (`scan` / `info` / `validate` / `upgrade`) |
 | `selftest.py`| offline tests |
-| `extract_auth_lib.py` | pull `libjl_ota_auth.so` from the OTA APK |
+| `extract_auth_lib.py` | pull `libjl_ota_auth.so` from the JieLi SDK's AAR (or the OTA APK) |

@@ -95,6 +95,17 @@ def check_downloaded(res: CompileResult, model: str) -> CompileResult:
     return res
 
 
+_FRAME_DATA = 5
+
+
+def written_data(res: CompileResult) -> bytes:
+    if res.kind not in spec.CPS_KINDS:
+        return b""
+    art = res.artifact
+    return b"".join(art[i + _FRAME_DATA:i + _FRAME_DATA + fwupd_cps.BLOCK]
+                    for i in range(0, len(art), fwupd_cps.FRAME_LEN))
+
+
 def compile_files(kind: str, paths: list[str], model: str = "d890") -> CompileResult:
     if kind not in spec.KIND_FILESPEC:
         raise CompileError('Unknown update kind "' + str(kind) + '".')

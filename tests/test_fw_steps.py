@@ -151,7 +151,7 @@ def test_the_wizard_takes_the_setup_steps_room_and_back_to_setup_returns_it():
         _begin(tab, [spec.KIND_FW, spec.KIND_ICON])
         _settle(root)
         assert not tab.top.winfo_ismapped() and not any(r.place_info() for r in tab._rails)
-        assert tab.wcontext.cget("text") == "D890UV · your own files"
+        assert tab.wcontext.cget("text") == "D890UV/BTECH-7X2 · your own files"
         tab._back_to_setup()
         _settle(root)
         assert tab.top.winfo_ismapped() and tab.setup.winfo_ismapped()
@@ -222,9 +222,14 @@ def test_the_banner_shows_progress_time_left_success_and_failure(monkeypatch):
         tab._on_next()
         tab._on_ready()
         tab._enter_writing_state()
-        tab._on_stage_error("no reply. Nothing was written.", False)
+        tab._on_stage_error("no reply.", False, touched=False)
         assert tab.wstatus.cget("text").startswith("✕ Failed: no reply")
         assert "partly written" not in tab.wstatus.cget("text")
+        assert "enter the update mode again" in tab.wstatus.cget("text")
+        tab._on_ready()
+        tab._enter_writing_state()
+        tab._on_stage_error("no ACK for frame 7.", False, touched=True)
+        assert "partly written" in tab.wstatus.cget("text")
         assert str(tab.wstatus.cget("background")) == gui_tab._BANNER["error"][0]
         order = tab.wizard.pack_slaves()
         assert order.index(tab.wctl) > order.index(tab.wstatus), "Retry and Skip sit under the failure"

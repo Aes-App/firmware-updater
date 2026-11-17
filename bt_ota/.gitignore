@@ -1,5 +1,5 @@
-# Native JieLi auth library, extracted from AnyTone's OTA APK for interoperability.
-# Not committed (avoid redistributing a third-party binary). Recreate it with:
-#   python -m bt_ota.extract_auth_lib "OTA V1.7.2.apk"
+# JieLi's auth library (Apache-2.0, see THIRD_PARTY_NOTICES.txt). It ships inside
+# every build but is kept out of git as a binary. Recreate it with:
+#   python -m bt_ota.extract_auth_lib jl_bt_ota_V1.9.2-release.aar
 libjl_ota_auth.so
 __pycache__/

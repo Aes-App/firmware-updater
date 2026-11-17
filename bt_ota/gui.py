@@ -13,11 +13,12 @@ from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
 from . import update_check
 from .client import MODELS, bluetooth_hint, firmware_kind, make_client, scan_devices
+from radio_fw import uipump as _uipump
 
 APP_TITLE = "AesApp Radio Updater"
 VENDOR = "AesApp Inc."
 WEBSITE = "https://aes.app/"
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 LOG_PREFIX = "[aesapp]"
 
 try:
@@ -170,6 +171,16 @@ def _install_update_banner(root, header):
         _link_label(holder, text="Update available: %s \u2197" % res.latest, url=res.url).pack()
 
     _check_for_updates(root, done)
+
+
+def _build_header(root):
+    header = ttk.Frame(root)
+    header.pack(fill="x", padx=8, pady=6)
+    _brand_header(header, small=True).pack(side="left")
+    ttk.Button(header, text="About", command=lambda: show_about(root)).pack(side="right")
+    _install_update_banner(root, header)
+    ttk.Separator(root).pack(fill="x", padx=8)
+    return header
 
 
 def _brand_header(parent, small=False):
@@ -351,6 +362,7 @@ class App:
             self._append_log(f"{LOG_PREFIX} debug logging on — logs at {_config_dir()}")
         if self._standalone:
             self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+            _on_mac_quit(self.root, self._on_close)
         self.root.after(80, self._drain)
 
     def _build_ui(self):
@@ -409,12 +421,8 @@ class App:
         self._q.put((kind, payload))
 
     def _drain(self):
-        try:
-            while True:
-                kind, payload = self._q.get_nowait()
-                self._handle(kind, payload)
-        except queue.Empty:
-            pass
+        _uipump.drain(self._q, self._handle,
+                      lambda kind, e: self._append_log(f"{LOG_PREFIX} internal error handling {kind!r}: {e}"))
         self.root.after(80, self._drain)
 
     def _handle(self, kind, payload):
@@ -432,10 +440,20 @@ class App:
         elif kind == "done":
             self._set_busy(False)
             self.progress["value"] = 100.0
-            self.status_var.set("Done — the module is rebooting to apply the new firmware.")
-            messagebox.showinfo("Success", "Bluetooth firmware written successfully.\n\n"
-                                "Restart the radio, then check the new version under "
-                                "Device Info ▸ BT Soft Ver.")
+            if payload == "probable":
+                self.status_var.set("Probably written — confirm the BT version on the radio.")
+                messagebox.showinfo(
+                    "Probably written",
+                    "Every byte of the firmware was delivered, and the module disconnected at the "
+                    "verify step before reporting a result. This is how the D578/D878 module "
+                    "behaves on most computers, and it usually means it accepted the image and "
+                    "rebooted.\n\nRestart the radio and check Device Info ▸ BT Soft Ver: if it shows "
+                    "the new version, the update succeeded. If not, run the update again.")
+            else:
+                self.status_var.set("Done — the module is rebooting to apply the new firmware.")
+                messagebox.showinfo("Success", "Bluetooth firmware written successfully.\n\n"
+                                    "Restart the radio, then check the new version under "
+                                    "Device Info ▸ BT Soft Ver.")
         elif kind == "error":
             self._set_busy(False)
             self.status_var.set(f"Failed: {payload}")
@@ -564,6 +582,7 @@ class App:
                 "File / model mismatch",
                 f"Selected model is {MODELS[kind]}, but the file looks like a "
                 f"{MODELS.get(fk, fk)} file:\n  {os.path.basename(path)}\n\nFlash anyway?",
+                default=messagebox.NO,
             ):
                 return
         device, _rssi, local_name = self._devices[idx]
@@ -573,6 +592,7 @@ class App:
             "Confirm firmware write",
             f"Write\n  {os.path.basename(path)}\nto the Bluetooth module of\n  {name}\n"
             f"as {MODELS[kind]}?\n\nKeep the radio powered and still during the update.",
+            default=messagebox.NO,
         ):
             return
         try:
@@ -595,8 +615,8 @@ class App:
             self._post("status", f"Connecting… ({kind})")
             await client.connect(device)
             self._post("status", "Connected — writing firmware…")
-            await client.upgrade(fw, progress_cb=self._progress_cb)
-            self._post("done")
+            outcome = await client.upgrade(fw, progress_cb=self._progress_cb)
+            self._post("done", outcome)
         except Exception as e:
             self._post("log", f"{LOG_PREFIX} ERROR: {e}\n{traceback.format_exc()}")
             hint = bluetooth_hint(e)
@@ -791,12 +811,7 @@ def main(url: str | None = None):
         root.destroy()
         return
 
-    header = ttk.Frame(root)
-    header.pack(fill="x", padx=8, pady=6)
-    _brand_header(header, small=True).pack(side="left")
-    ttk.Button(header, text="About", command=lambda: show_about(root)).pack(side="right")
-    _install_update_banner(root, header)
-    ttk.Separator(root).pack(fill="x", padx=8)
+    _build_header(root)
 
     nb = ttk.Notebook(root)
     nb.pack(fill="both", expand=True)
@@ -884,7 +899,8 @@ def main(url: str | None = None):
                 pass
         if busy and not messagebox.askyesno(
                 "Quit during a write?",
-                "An update is in progress. Quitting now can leave a radio unbootable.\n\nQuit anyway?"):
+                "An update is in progress. Quitting now can leave a radio unbootable.\n\nQuit anyway?",
+                default=messagebox.NO):
             return
         if contacts is not None:
             try:
@@ -897,9 +913,17 @@ def main(url: str | None = None):
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", _on_close)
+    _on_mac_quit(root, _on_close)
     _pin_window_size(root)
     _bring_to_front(root)
     root.mainloop()
+
+
+def _on_mac_quit(root, handler) -> None:
+    try:
+        root.createcommand("::tk::mac::Quit", handler)
+    except tk.TclError:
+        pass
 
 
 if __name__ == "__main__":

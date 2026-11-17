@@ -1,5 +1,5 @@
 THIRD-PARTY NOTICES
-AesApp BT Firmware Updater
+AesApp Radio Updater
 
 This product includes third-party software and interoperates with hardware and
 software that are the property of their respective owners. The notices below are
@@ -9,18 +9,27 @@ provided for attribution and legal compliance.
 1. JieLi jl_bt_ota SDK — libjl_ota_auth.so
 ================================================================================
 
-This product bundles the native library "libjl_ota_auth.so" from the JieLi
-"jl_bt_ota" Bluetooth OTA SDK.
+This product bundles, unmodified, the native library "libjl_ota_auth.so"
+(arm64-v8a) from the JieLi Bluetooth OTA SDK for Android, which JieLi publishes
+under the Apache License, Version 2.0:
 
-    Copyright (c) Zhuhai Jieli Technology Co., Ltd. (珠海市杰理科技股份有限公司)
+    https://github.com/Jieli-Tech/Android-JL_OTA
+
+    Copyright © 2015 ZhuHai JieLi Technology Co.,Ltd
     Licensed under the Apache License, Version 2.0.
 
-The library is redistributed unmodified under the terms of the Apache License,
-Version 2.0, a full copy of which is included below. It is used solely for
-interoperability with JieLi-based Bluetooth modules the user owns.
+The bundled file is the one inside that SDK's jl_bt_ota_V1.9.2-release.aar
+(jni/arm64-v8a/libjl_ota_auth.so, 15704 bytes,
+SHA-256 e8987fb20898ae52bcc18f3860244abbfb7f3a90132425ea8455c89bc4f8a178).
+The SDK ships no NOTICE file. A full copy of the license is included below.
 
-(If JieLi's SDK ships a specific NOTICE/copyright line, replace the copyright
-line above with that verbatim text.)
+This product also contains, in bt_ota/_jl_itab.py, a pre-decoded form of two
+functions of that library, which the updater interprets in Python so that the
+authentication handshake stays byte-exact. That table is derived from the
+library above and is distributed under the same license, with this notice.
+
+The library is used solely for interoperability with JieLi-based Bluetooth
+modules the user owns.
 
 ================================================================================
 2. Trademarks & non-affiliation
@@ -35,12 +44,13 @@ All product names, logos, trademarks, and registered trademarks are the property
 of their respective owners. Their use here is for identification and
 interoperability only and does not imply any affiliation or endorsement.
 
-This software (AesApp BT Firmware Updater) is an INDEPENDENT, UNOFFICIAL tool
+This software (AesApp Radio Updater) is an INDEPENDENT, UNOFFICIAL tool
 developed by AesApp Inc. It is NOT produced, affiliated with, authorized,
 endorsed, or sponsored by Qixiang Electron Science & Technology Co., Ltd.,
 Zhuhai Jieli Technology Co., Ltd., Infineon Technologies AG, or any of their
-subsidiaries. Firmware files are supplied by the user; none are distributed with
-this software.
+subsidiaries. No radio firmware is distributed with this software: the files it
+writes are supplied by the user, or fetched from AesApp's own server at the
+user's request.
 
 ================================================================================
 3. Apache License, Version 2.0

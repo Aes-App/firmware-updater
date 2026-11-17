@@ -89,12 +89,42 @@ def test_a_plan_that_claims_contacts_but_has_none_is_refused():
     ([], "empty"),
     ([{"addr": "02500000", "hex": "00" * 15}], "not whole 16-byte blocks"),
     ([{"addr": "02500000", "hex": "zz" * 16}], "not readable hex"),
+    ([{"addr": "-10", "hex": BLOCK}], "not readable hex"),
+    ([{"addr": "0x02500000", "hex": BLOCK}], "not readable hex"),
+    ([{"addr": "102500000", "hex": BLOCK}], "not readable hex"),
     ([{"addr": 0x02500000, "hex": BLOCK}], "malformed"),
     ([{"addr": "02500000"}], "malformed"),
 ])
 def test_a_short_or_malformed_download_never_becomes_a_write(segments, hint):
     with pytest.raises(client.CodeplugClientError, match=hint):
         client.WritePlan.from_envelope({"segments": segments})
+
+
+def test_a_segment_that_crosses_into_the_contact_region_is_refused():
+    with pytest.raises(client.CodeplugClientError, match="crosses the boundary"):
+        client.WritePlan.from_envelope({
+            "segments": [seg_dict(0x03FFFFF0, 2), seg_dict(0x05500000)],
+            "contactsIncluded": True,
+            "contactRegions": [[0x04000000, 0x04800000], [0x04840000, 0x0A000000]],
+        })
+    plan = client.WritePlan.from_envelope({
+        "segments": [seg_dict(0x03FFFFF0, 1), seg_dict(0x04000000)],
+        "contactsIncluded": True,
+        "contactRegions": [[0x04000000, 0x04800000]],
+    })
+    assert [s.addr for s in plan.codeplug] == [0x03FFFFF0]
+    assert [s.addr for s in plan.contacts] == [0x04000000]
+
+
+def test_a_plan_that_writes_one_address_twice_is_refused():
+    with pytest.raises(client.CodeplugClientError, match="overlaps itself"):
+        client.WritePlan.from_envelope({
+            "segments": [{"addr": "02500000", "hex": "11" * 16}, {"addr": "02500000", "hex": "22" * 16}],
+        })
+    with pytest.raises(client.CodeplugClientError, match="overlaps itself"):
+        client.WritePlan.from_envelope({
+            "segments": [seg_dict(0x02500000, 2), seg_dict(0x02500010)],
+        })
 
 
 def test_a_broken_region_list_is_refused():

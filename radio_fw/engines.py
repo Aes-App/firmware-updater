@@ -13,10 +13,17 @@ VERSION = "1.0.0"
 
 
 class FirmwareUpdateError(Exception):
-    pass
+
+    def __init__(self, *args, touched: bool = True):
+        super().__init__(*args)
+        self.touched = touched
 
 
 class AbortedError(FirmwareUpdateError):
+    pass
+
+
+class LinkDroppedError(FirmwareUpdateError):
     pass
 
 
@@ -150,7 +157,7 @@ class SerialLink:
         return bytes(self._buf)
 
     def _dropped(self, e) -> "FirmwareUpdateError":
-        return FirmwareUpdateError(
+        return LinkDroppedError(
             "serial read failed: " + str(e) + " — the radio dropped off the USB bus "
             "(reset, cable or power glitch?)")
 
@@ -346,7 +353,7 @@ def _cps_handshake(kind: str, link: SerialLink, manifest: dict, on_log):
 
 
 CPS_IDENT_NAMES = {
-    "ID890UV": "a D890UV",
+    "ID890UV": "a D890UV/BTECH-7X2",
     "ID878UV2": "a D878UVII",
     "ID878UV": "a first-generation D878UV",
     "ID168UV": "a D168UV",
@@ -378,11 +385,9 @@ def _cps_await_ack(link: SerialLink, index: int, frame: bytes, timeout_ms: int):
     addr = "0x" + format(_read_u32le(frame, 1), "08x")
     try:
         r = link.read_exactly(1, timeout_ms)
-    except AbortedError:
+    except (AbortedError, LinkDroppedError):
         raise
     except FirmwareUpdateError as e:
-        if "aborted by the operator" in str(e) or "serial read failed" in str(e):
-            raise
         raise FirmwareUpdateError(
             "no ACK for frame " + str(index) + " @ " + addr + ": " + str(e)
             + ". NOT resending — the bootloader takes a single monotonic pass, so this component "
@@ -392,6 +397,11 @@ def _cps_await_ack(link: SerialLink, index: int, frame: bytes, timeout_ms: int):
             "frame " + str(index) + " @ " + addr + " answered " + _hex(r) + " instead of 06"
             + (" (plus " + _hex(link.inbuf) + " buffered)" if link.buffered else "")
             + " — the bootloader rejected it or the link desynchronised. Stopping before the next frame.")
+    if link.buffered:
+        raise FirmwareUpdateError(
+            "frame " + str(index) + " @ " + addr + " was acknowledged, but " + _hex(link.inbuf)
+            + " arrived with the ACK — the link is out of step with the bootloader. Stopping before "
+            "the next frame; this component has to be re-flashed from frame 0.")
 
 
 def _run_cps(kind: str, port_name: str, artifact: bytes, manifest: dict,
@@ -404,9 +414,15 @@ def _run_cps(kind: str, port_name: str, artifact: bytes, manifest: dict,
     serial_cfg = manifest.get("serial") or {}
     link = SerialLink(port_name, on_log=on_log, abort=abort)
     try:
-        link.open(serial_cfg.get("baud") or CPS_BAUD, dtr=False, rts=True)
-        link.flush()
-        _cps_handshake(kind, link, manifest, on_log)
+        try:
+            link.open(serial_cfg.get("baud") or CPS_BAUD, dtr=False, rts=True)
+            link.flush()
+            _cps_handshake(kind, link, manifest, on_log)
+        except AbortedError:
+            raise
+        except FirmwareUpdateError as e:
+            e.touched = False
+            raise
 
         link.flush()
         skipped = manifest.get("skipped_entries") or []
@@ -574,8 +590,11 @@ def _run_nr(port_name: str, artifact: bytes, manifest: dict, on_log, on_progress
                         + str(NR_ENTER_ATTEMPTS) + " attempts over "
                         + str(NR_ENTER_ATTEMPTS * NR_ENTER_RETRY_TIMEOUT_MS // 1000)
                         + " s. Nothing has been written. Check the screen reads \"UPDATE MODE "
-                        "FOR LinkBoard\" and that this is the radio's COM port.")
+                        "FOR LinkBoard\" and that this is the radio's COM port.", touched=False)
                 link.flush()
+            except FirmwareUpdateError as e:
+                e.touched = False
+                raise
 
         last_start_res = None
         finished = False
@@ -905,7 +924,9 @@ def _run_sct(port_name: str, artifact: bytes, manifest: dict, on_log, on_progres
         on_log(chip + " update complete: " + str(writes_sent) + " write frames acknowledged. This "
                "protocol has no read-back or verify step.", "ok")
         on_progress(len(plan), len(plan), "done")
-    except FirmwareUpdateError:
+    except FirmwareUpdateError as e:
+        if not committed and not isinstance(e, AbortedError):
+            e.touched = False
         if parity_restore_frame is not None and link.ser is not None:
             on_log("TX parity_restore " + _hex(parity_restore_frame)
                    + " (restoring the DSP's parity state on the way out)", "tx")

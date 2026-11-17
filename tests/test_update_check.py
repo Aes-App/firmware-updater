@@ -131,6 +131,25 @@ def test_a_release_with_no_html_url_still_points_at_the_releases_page():
     assert r.url == uc.RELEASES_URL
 
 
+def test_the_real_opener_verifies_tls_with_a_bundle_the_frozen_app_carries(monkeypatch):
+    import ssl
+    seen = {}
+
+    def fake_urlopen(req, timeout=None, context=None):
+        seen["context"] = context
+        raise OSError("no network in tests")
+
+    monkeypatch.setattr(uc.urllib.request, "urlopen", fake_urlopen)
+    r = uc.check("1.0.0")
+    assert r.ok is False
+    ctx = seen["context"]
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
+    certifi = pytest.importorskip("certifi")
+    assert any(c.get("subject") for c in ctx.get_ca_certs()), "certifi's bundle is loaded"
+    assert os.path.exists(certifi.where())
+
+
 def test_the_urls_name_the_public_mirror():
     assert uc.API_URL == "https://api.github.com/repos/Aes-App/firmware-updater/releases/latest"
     assert uc.RELEASES_URL == "https://github.com/Aes-App/firmware-updater/releases/latest"

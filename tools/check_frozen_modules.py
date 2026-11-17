@@ -51,6 +51,8 @@ REQUIRED = [
     "radio_fw.gui_tab",
     "radio_fw.layout",
     "radio_fw.ports",
+    "radio_fw.changelog",
+    "radio_fw.webcps",
     "radio_fw.engines",
     "radio_fw.compiler",
     "radio_fw.download",

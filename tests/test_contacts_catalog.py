@@ -243,6 +243,28 @@ def test_corrupt_artifact_is_refused_and_not_cached(server, tmp_path):
         catalog.download_artifact(server, GOOD, {"list": "x"})
 
 
+def test_a_redirect_to_another_host_does_not_carry_the_bearer():
+    import urllib.error
+    import urllib.request
+    h = catalog._BearerStaysHome()
+    req = urllib.request.Request("https://cps.aes.app/api/x", headers={"Authorization": "Bearer T"})
+    away = h.redirect_request(req, None, 302, "Found", {}, "https://elsewhere.example/y")
+    assert not away.has_header("Authorization")
+    home = h.redirect_request(req, None, 302, "Found", {}, "https://cps.aes.app/api/y")
+    assert home.get_header("Authorization") == "Bearer T"
+    other_port = h.redirect_request(req, None, 302, "Found", {}, "https://cps.aes.app:8443/api/y")
+    assert not other_port.has_header("Authorization")
+    with pytest.raises(urllib.error.URLError):
+        h.redirect_request(req, None, 302, "Found", {}, "http://cps.aes.app/api/y")
+
+
+def test_an_artifact_on_another_host_is_refused(server):
+    cat = catalog.fetch_catalog(server, GOOD)
+    b = dict(cat["bundles"][0], artifactUrl="https://elsewhere.example/artifact", sha256="ab" * 32)
+    with pytest.raises(catalog.ContactsError, match="another server"):
+        catalog.download_artifact(server, GOOD, b)
+
+
 def test_offline_is_a_clear_error():
     with pytest.raises(catalog.ContactsError):
         catalog.claim_session("http://127.0.0.1:59999", GOOD, timeout=2)

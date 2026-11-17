@@ -253,7 +253,7 @@ class AnytoneBtOta:
         progress_cb: Callable[[int, int], None] = _noop_progress,
         transfer_timeout: float = 600.0,
         max_reconnects: int = 3,
-    ) -> None:
+    ) -> str:
         if len(ufw) < 64:
             raise OtaError("ufw file too small to be valid")
         self._ufw = ufw
@@ -282,7 +282,7 @@ class AnytoneBtOta:
                 except OtaError:
                     pass
                 self._log("done - module rebooting to apply the new BT firmware")
-                return
+                return "verified"
 
             need_reconnect = (result == 128) or (result is None and single)
             if need_reconnect:

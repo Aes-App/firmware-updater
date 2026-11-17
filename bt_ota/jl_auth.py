@@ -39,6 +39,8 @@ _PLT = {
 }
 
 DEFAULT_SO_NAME = "libjl_ota_auth.so"
+KNOWN_SO_SHA256 = "e8987fb20898ae52bcc18f3860244abbfb7f3a90132425ea8455c89bc4f8a178"
+KNOWN_SO_SIZE = 15704
 
 AUTH_OK = bytes([2, 0x70, 0x61, 0x73, 0x73])
 
@@ -57,6 +59,19 @@ def _default_so_path() -> str:
         if os.path.exists(c):
             return c
     return candidates[0]
+
+
+def check_known_build(data: bytes, path: str = DEFAULT_SO_NAME) -> None:
+    import hashlib
+    if data[:4] != b"\x7fELF":
+        raise ValueError(f"{path} is not an ELF file")
+    digest = hashlib.sha256(data).hexdigest()
+    if len(data) != KNOWN_SO_SIZE or digest != KNOWN_SO_SHA256:
+        raise ValueError(
+            f"{path} is not the libjl_ota_auth.so build this updater is verified against "
+            f"({len(data)} bytes, sha256 {digest[:16]}…; expected {KNOWN_SO_SIZE} bytes, "
+            f"{KNOWN_SO_SHA256[:16]}…). Use the arm64-v8a library from JieLi's "
+            "jl_bt_ota_V1.9.2-release.aar: python -m bt_ota.extract_auth_lib <that .aar>")
 
 
 def _load_elf_segments(path: str):
@@ -91,12 +106,11 @@ class AuthEmulator:
         self.so_path = so_path or _default_so_path()
         if not os.path.exists(self.so_path):
             raise FileNotFoundError(
-                f"Auth library not found at {self.so_path}. Extract it from the "
-                "AnyTone OTA APK: python -m bt_ota.extract_auth_lib <OTA.apk>"
+                f"Auth library not found at {self.so_path}. Extract it from JieLi's "
+                "OTA SDK: python -m bt_ota.extract_auth_lib jl_bt_ota_V1.9.2-release.aar"
             )
         self._so_data = open(self.so_path, "rb").read()
-        if self._so_data[:4] != b"\x7fELF":
-            raise ValueError(f"{self.so_path} is not an ELF file")
+        check_known_build(self._so_data, self.so_path)
         self._e1 = _E1(self._so_data)
         self.uc = None
 

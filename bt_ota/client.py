@@ -19,7 +19,7 @@ def firmware_kind(path: str) -> str:
 
 
 MODELS = {
-    "jieli": "Anytone D890 (JieLi BT)",
+    "jieli": "AT-D890UV/BTECH-7X2 (JieLi)",
     "wiced": "Anytone D578/D878 Series (Cypress WICED BT)",
 }
 

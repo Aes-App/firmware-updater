@@ -155,9 +155,13 @@ async def cmd_upgrade(args) -> int:
     client, _ = make_client(args.ufw, use_auth=not args.no_auth, auth_lib=args.auth_lib, log_cb=_log)
     try:
         await client.connect(target)
-        await client.upgrade(fw, progress_cb=progress)
+        outcome = await client.upgrade(fw, progress_cb=progress)
         print()
-        _log("SUCCESS")
+        if outcome == "probable":
+            _log("PROBABLY WRITTEN — the module dropped the link at verify before answering. "
+                 "Restart the radio and confirm the BT version.")
+        else:
+            _log("SUCCESS")
         return 0
     except Exception as e:
         print()

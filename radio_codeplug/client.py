@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 from urllib.parse import urljoin
@@ -162,6 +163,8 @@ class WritePlan:
             addr_s, hex_s = s.get("addr"), s.get("hex")
             if not isinstance(addr_s, str) or not isinstance(hex_s, str):
                 raise CodeplugClientError(f"Write segment {i} is malformed.")
+            if not re.fullmatch(r"[0-9a-fA-F]{1,8}", addr_s):
+                raise CodeplugClientError(f"Write segment {i} is not readable hex.")
             try:
                 addr = int(addr_s, 16)
                 data = bytes.fromhex(hex_s)
@@ -171,10 +174,24 @@ class WritePlan:
                 raise CodeplugClientError(
                     f"Write segment {i} @0x{addr:08x} is {len(data)} bytes — not whole 16-byte blocks. "
                     "A short download must never become a short write.")
-            is_contact = any(lo <= addr < hi for lo, hi in regions)
-            (cont if is_contact else code).append(seg.Segment(addr, data))
+            end = addr + len(data)
+            inside = any(lo <= addr and end <= hi for lo, hi in regions)
+            touches = any(addr < hi and end > lo for lo, hi in regions)
+            if touches and not inside:
+                raise CodeplugClientError(
+                    f"Write segment {i} @0x{addr:08x} ({len(data)} bytes) crosses the boundary of the "
+                    "digital-contact region, so it belongs to neither phase. Refusing to write it. "
+                    "Prepare the write again in the web app.")
+            (cont if inside else code).append(seg.Segment(addr, data))
         code.sort(key=lambda s: s.addr)
         cont.sort(key=lambda s: s.addr)
+        try:
+            seg._check_layout(code)
+            seg._check_layout(cont)
+        except seg.SegmentError as e:
+            raise CodeplugClientError(
+                f"The prepared write overlaps itself ({e}), so the same address would be written twice. "
+                "Prepare the write again in the web app.")
         if env.get("contactsIncluded") and not cont:
             raise CodeplugClientError(
                 "The server says this write includes the digital contact list but none of the "

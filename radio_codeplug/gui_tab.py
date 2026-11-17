@@ -10,6 +10,7 @@ from typing import Optional
 from serial.tools import list_ports
 
 from radio_fw import ports as radio_ports
+from radio_fw import uipump as _uipump
 from radio_fw.engines import AbortedError
 from radio_contacts import catalog as _cat
 from radio_contacts import engine as ce
@@ -55,20 +56,9 @@ class CodeplugWriteTab:
         self._q.put((kind, payload))
 
     def _drain(self):
-        try:
-            while True:
-                kind, payload = self._q.get_nowait()
-                try:
-                    self._handle(kind, payload)
-                except Exception as e:
-                    try:
-                        self._log(f"internal error handling {kind!r}: {e}", "er")
-                    except Exception:
-                        pass
-        except queue.Empty:
-            pass
-        finally:
-            self.root.after(80, self._drain)
+        _uipump.drain(self._q, self._handle,
+                      lambda kind, e: self._log(f"internal error handling {kind!r}: {e}", "er"))
+        self.root.after(80, self._drain)
 
     def _handle(self, kind, payload):
         if kind == "log":
@@ -312,7 +302,8 @@ class CodeplugWriteTab:
                 "tones are REPLACED."
                 + contacts_line
                 + "\n• The band plan is kept.\n"
-                "• The radio restarts after each phase; leave it plugged in.\n\nContinue?"):
+                "• The radio restarts after each phase; leave it plugged in.\n\nContinue?",
+                default=messagebox.NO):
             return
         self._last_port = port
         self._writing = True
@@ -360,6 +351,14 @@ class CodeplugWriteTab:
             self._post("write_err", ("Unexpected error: " + str(e), False))
 
     def _on_abort(self):
+        if not self._writing or self._abort is None:
+            return
+        if not messagebox.askyesno(
+                "Stop writing?",
+                "The codeplug will be left partly written, and the radio must not be used until "
+                "it has been written again in full.\n\nStop now?",
+                default=messagebox.NO):
+            return
         if self._abort is not None:
             self._abort.set()
             self._log("stopping after the current block…", "er")

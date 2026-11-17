@@ -11,6 +11,7 @@ from typing import Optional
 from serial.tools import list_ports
 
 from radio_fw import ports as radio_ports
+from radio_fw import uipump as _uipump
 from radio_fw.engines import AbortedError
 from radio_fw.layout import follow_width
 
@@ -119,20 +120,9 @@ class ContactRefreshTab:
         self._q.put((kind, payload))
 
     def _drain(self):
-        try:
-            while True:
-                kind, payload = self._q.get_nowait()
-                try:
-                    self._handle(kind, payload)
-                except Exception as e:
-                    try:
-                        self._log(f"internal error handling {kind!r}: {e}", "er")
-                    except Exception:
-                        pass
-        except queue.Empty:
-            pass
-        finally:
-            self.root.after(80, self._drain)
+        _uipump.drain(self._q, self._handle,
+                      lambda kind, e: self._log(f"internal error handling {kind!r}: {e}", "er"))
+        self.root.after(80, self._drain)
 
     def _handle(self, kind, payload):
         if kind == "log":
@@ -1076,7 +1066,8 @@ class ContactRefreshTab:
                       catalog.estimate_seconds(self._estimated_blocks(),
                                            self.spec.fmt if self.spec else None)),
                   "", "Continue?"]
-        if not messagebox.askyesno("Write the contact list you built?", "\n".join(lines)):
+        if not messagebox.askyesno("Write the contact list you built?", "\n".join(lines),
+                                   default=messagebox.NO):
             return
         held = self._begin_write()
         local = {"store": self.store, "spec": self.spec, "codes": codes, "count": count,
@@ -1101,7 +1092,8 @@ class ContactRefreshTab:
                 f"This replaces the digital-contact database on the {self.ident.model} with:\n\n{what}\n\n"
                 f"Estimated time: {_fmt_eta(catalog.estimate_seconds(blocks, b.get('format')))}. "
                 "Keep the radio switched on "
-                "and the USB cable in the whole time. Your codeplug is not touched.\n\nContinue?"):
+                "and the USB cable in the whole time. Your codeplug is not touched.\n\nContinue?",
+                default=messagebox.NO):
             return
         held = self._begin_write()
         threading.Thread(target=self._write_worker,
@@ -1232,7 +1224,7 @@ class ContactRefreshTab:
         if not messagebox.askyesno(
                 "Stop writing?",
                 "The contact list will be left partly written (the radio still works; run the refresh "
-                "again to complete it).\n\nStop now?"):
+                "again to complete it).\n\nStop now?", default=messagebox.NO):
             return
         self._abort.set()
 

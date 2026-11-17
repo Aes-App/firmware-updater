@@ -17,9 +17,12 @@ from tkinter import font as tkfont
 from serial.tools import list_ports
 
 from . import compiler, download, engines, spec
+from . import changelog as _changelog
+from . import webcps as _webcps
 from radio_contacts import engine as _pc_engine
 from .layout import follow_width as _follow_width
 from . import ports as _ports
+from . import uipump as _uipump
 
 _LOG_TAGS = {"er": "#b00020", "error": "#b00020", "done": "#127a2e"}
 
@@ -392,6 +395,9 @@ class RadioBoardsTab:
         self._catalog_loaded = False
         self._catalog_loading = False
         self._version_map: dict[str, dict] = {}
+        self._webcps: dict | None = None
+        self._webcps_loading = False
+        self._webcps_offered = False
         self._fetch_token = 0
         self._dl_pending = 0
         self._fetched_label = None
@@ -410,6 +416,7 @@ class RadioBoardsTab:
 
         self._build()
         self._on_source_change()
+        self._load_webcps()
         self.root.after(80, self._drain)
 
     def _badge(self, state: str) -> tk.PhotoImage:
@@ -422,12 +429,8 @@ class RadioBoardsTab:
         self._q.put((kind, payload))
 
     def _drain(self):
-        try:
-            while True:
-                kind, payload = self._q.get_nowait()
-                self._handle(kind, payload)
-        except queue.Empty:
-            pass
+        _uipump.drain(self._q, self._handle,
+                      lambda kind, e: self._log(f"internal error handling {kind!r}: {e}", "er"))
         self.root.after(80, self._drain)
 
     def _handle(self, kind, payload):
@@ -445,8 +448,8 @@ class RadioBoardsTab:
         elif kind == "stage_done":
             self._on_stage_done()
         elif kind == "stage_error":
-            msg, aborted = payload
-            self._on_stage_error(msg, aborted)
+            msg, aborted, touched = payload
+            self._on_stage_error(msg, aborted, touched)
         elif kind == "catalog_ok":
             self._catalog = payload or []
             self._catalog_loaded = True
@@ -459,6 +462,10 @@ class RadioBoardsTab:
                 text=str(payload) + "  (Click “Refresh list” to try again.)", foreground="#b00020")
         elif kind == "catalog_status":
             self.server_status.configure(text=str(payload), foreground="#8a6d00")
+        elif kind == "webcps":
+            self._webcps_loading = False
+            if payload is not None:
+                self._webcps = payload
         elif kind == "dl_status":
             row, gen, msg = payload
             if gen == row._gen and row in self.rows and row.result is None:
@@ -546,8 +553,22 @@ class RadioBoardsTab:
         self.version_box["values"] = []
         self.version_var.set("")
         self.fetch_btn.state(["disabled"])
+        self._refresh_version_buttons()
         self.server_status.configure(text="Loading versions from the AesApp server…", foreground="#666")
         threading.Thread(target=self._catalog_worker, daemon=True).start()
+        self._load_webcps()
+
+    def _load_webcps(self):
+        if self._webcps is not None or self._webcps_loading:
+            return
+        self._webcps_loading = True
+        threading.Thread(target=self._webcps_worker, daemon=True).start()
+
+    def _webcps_worker(self):
+        try:
+            self._post("webcps", download.fetch_webcps_firmware())
+        except Exception:
+            self._post("webcps", None)
 
     def _catalog_worker(self):
         try:
@@ -565,7 +586,7 @@ class RadioBoardsTab:
             self.version_box["values"] = []
             self.version_var.set("")
             self.fetch_btn.state(["disabled"])
-            self.cps_btn.state(["disabled"])
+            self._refresh_version_buttons()
             self.server_status.configure(text="Identify the radio above first.", foreground="#8a6d00")
             return
         wanted = spec.server_models(self.model)
@@ -596,7 +617,7 @@ class RadioBoardsTab:
         else:
             self.version_var.set("")
             self.fetch_btn.state(["disabled"])
-            self.cps_btn.state(["disabled"])
+            self._refresh_version_buttons()
             self.server_status.configure(
                 text="No prebuilt versions are available for this radio yet. Use your own files instead.",
                 foreground="#8a6d00")
@@ -606,11 +627,39 @@ class RadioBoardsTab:
 
     def _on_version_selected(self):
         b = self._selected_bundle()
-        self.cps_btn.state(["!disabled"] if (b and b.get("cpsUrl")) else ["disabled"])
+        self._refresh_version_buttons()
         if not self._writing and self.version_var.get() != self._fetched_label \
                 and any(r.result or r.error for r in self.rows):
             self._clear_fetched()
         self._show_component_versions(b)
+
+    def _refresh_version_buttons(self):
+        b = self._selected_bundle()
+        self.cps_btn.state(["!disabled"] if (b and b.get("cpsUrl")) else ["disabled"])
+        self.changelog_btn.state(["!disabled"] if _changelog.changelog_of(b) else ["disabled"])
+
+    def _on_changelog(self):
+        entries = []
+        for label, bundle in self._version_map.items():
+            parts = []
+            for c in bundle.get("components") or []:
+                kind = c.get("kind")
+                if kind in spec.KIND_FILESPEC:
+                    version = c.get("version")
+                    parts.append(spec.label(kind, self.model) + (" " + str(version) if version else ""))
+            entries.append((label, _changelog.changelog_of(bundle), " · ".join(parts)))
+        if not entries:
+            return
+        radio = (spec.variant_label(self.family, self.model) + self._chip_part(self.radio_chip)
+                 if self.family else spec.model_label(self.model))
+        self._changelog_dialog = _changelog.ChangelogDialog(
+            self.root, radio, entries, self.version_var.get(), self._choose_version)
+
+    def _choose_version(self, label):
+        if self._writing or label not in self._version_map or label == self.version_var.get():
+            return
+        self.version_var.set(label)
+        self._on_version_selected()
 
     def _show_component_versions(self, bundle):
         comps = {c.get("kind"): c for c in (bundle.get("components", []) if bundle else [])}
@@ -753,8 +802,9 @@ class RadioBoardsTab:
         ttk.Label(self.server_row, text="Version:").grid(row=0, column=0, sticky="w")
         self.version_var = tk.StringVar()
         self.version_box = ttk.Combobox(self.server_row, textvariable=self.version_var,
-                                        state="readonly", width=34)
-        self.version_box.grid(row=0, column=1, sticky="w", padx=(6, 4))
+                                        state="readonly", width=24)
+        self.version_box.grid(row=0, column=1, sticky="ew", padx=(6, 4))
+        self.server_row.columnconfigure(1, weight=1)
         self.version_box.bind("<<ComboboxSelected>>", lambda _e: self._on_version_selected())
         self.reload_btn = ttk.Label(self.server_row, text="⟳", font=("", 16),
                                     cursor="hand2")
@@ -762,13 +812,16 @@ class RadioBoardsTab:
         self.reload_btn.bind("<Button-1>", self._on_reload_click)
         self.fetch_btn = _AccentButton(self.server_row, text="Fetch", command=self._on_fetch)
         self.fetch_btn.grid(row=0, column=3, padx=(8, 0))
+        self.changelog_btn = ttk.Button(self.server_row, text="Changelog", command=self._on_changelog)
+        self.changelog_btn.grid(row=0, column=4, padx=(8, 0))
+        self.changelog_btn.state(["disabled"])
         self.cps_btn = ttk.Button(self.server_row, text="Download CPS",
                                   command=self._on_download_cps)
-        self.cps_btn.grid(row=0, column=4, padx=(8, 0))
+        self.cps_btn.grid(row=0, column=5, padx=(8, 0))
         self.cps_btn.state(["disabled"])
         self.server_status = ttk.Label(self.server_row, text="", foreground="#666",
                                        wraplength=620, justify="left")
-        self.server_status.grid(row=1, column=0, columnspan=5, sticky="w", pady=(2, 0))
+        self.server_status.grid(row=1, column=0, columnspan=6, sticky="w", pady=(2, 0))
         _follow_width(self.server_status, self.server_row, reserve=8)
 
         self.setup = ttk.Frame(outer)
@@ -890,10 +943,21 @@ class RadioBoardsTab:
         self._mcu_label.pack(side="left", anchor="n", padx=(0, 12))
         self.done.bind("<Configure>", lambda _e: self._schedule_fit())
         self.done.bind("<Map>", lambda _e: self._schedule_fit(), add="+")
-        self.mcu_reset_lbl = ttk.Label(_mcu_body, justify="left", wraplength=420,
+        _mcu_text = ttk.Frame(_mcu_body)
+        _mcu_text.pack(side="left", anchor="n", fill="x", expand=True)
+        self.mcu_reset_lbl = ttk.Label(_mcu_text, justify="left", wraplength=420,
                                        foreground="#7a1020", font=("", 11))
-        self.mcu_reset_lbl.pack(side="left", anchor="n", fill="x", expand=True)
+        self.mcu_reset_lbl.pack(anchor="w", fill="x")
         _follow_width(self.mcu_reset_lbl, _mcu_body, reserve=lambda: self._mcu_label.winfo_reqwidth() + 20)
+        self.webcps_note = ttk.Frame(_mcu_text)
+        self.webcps_note_lbl = ttk.Label(self.webcps_note, text=_webcps.RESTORE_NOTE, justify="left",
+                                         wraplength=420, font=("", 11))
+        self.webcps_note_lbl.pack(anchor="w", fill="x")
+        _follow_width(self.webcps_note_lbl, _mcu_body, reserve=lambda: self._mcu_label.winfo_reqwidth() + 20)
+        self.webcps_link = ttk.Label(self.webcps_note, text=_webcps.OPEN, foreground="#0b5fff",
+                                     font=("", 11, "underline"), cursor="hand2")
+        self.webcps_link.pack(anchor="w", pady=(2, 0))
+        self.webcps_link.bind("<Button-1>", lambda _e: webbrowser.open(_webcps.URL))
         ttk.Button(again, text="Update another radio (same selection)", command=self._again).pack(side="left")
         ttk.Button(again, text="Back to setup", command=self._back_to_setup).pack(side="left", padx=8)
 
@@ -1003,6 +1067,7 @@ class RadioBoardsTab:
         if getattr(self, "cps_btn", None) is not None:
             if locked or not server:
                 self.cps_btn.state(["disabled"])
+                self.changelog_btn.state(["disabled"])
             else:
                 self._on_version_selected()
 
@@ -1282,14 +1347,23 @@ class RadioBoardsTab:
         if spec.is_untested(self.model) and not messagebox.askyesno(
                 "Not tested on real hardware",
                 spec.untested_warning(self.model) + "\n\nContinue anyway?",
-                icon=messagebox.WARNING):
+                icon=messagebox.WARNING, default=messagebox.NO):
             return
+        self._webcps_offered = False
         if self._plan_has_fw() and spec.has_codeplug(self.model):
-            if not messagebox.askyesno(
+            cov = _webcps.coverage(self._webcps, self.model)
+            target = (_webcps.target_version(self._version_map.get(self._fetched_label))
+                      if self.source_var.get() == "server" and self._fetched_label else None)
+            firmware = next(p for p in self.plan if p.kind == spec.KIND_FW)
+            if _webcps.applies(cov, target) and _webcps.supports_firmware(firmware):
+                if not _webcps.ask_backup(self.root, _webcps.radio_name(self.model), cov, target):
+                    return
+                self._webcps_offered = True
+            elif not messagebox.askyesno(
                     "Back up your codeplug first",
                     "This batch writes the Radio Firmware, which can reset the radio's settings.\n\n"
                     "Read the codeplug from THIS radio and save it to your PC before continuing.\n\n"
-                    "Is this radio's codeplug backed up?"):
+                    "Is this radio's codeplug backed up?", default=messagebox.NO):
                 return
         self._lock_model(True)
         self.step = 0
@@ -1588,9 +1662,9 @@ class RadioBoardsTab:
                         abort=abort, **opts)
             self._post("stage_done", None)
         except engines.AbortedError as e:
-            self._post("stage_error", (str(e), True))
+            self._post("stage_error", (str(e), True, True))
         except Exception as e:
-            self._post("stage_error", (str(e), False))
+            self._post("stage_error", (str(e), False, getattr(e, "touched", True)))
 
     def _on_stage_done(self):
         self._writing = False
@@ -1619,16 +1693,17 @@ class RadioBoardsTab:
         result["seconds"] = time.monotonic() - result["t0"]
         return result["seconds"]
 
-    def _on_stage_error(self, msg, aborted):
+    def _on_stage_error(self, msg, aborted, touched=True):
         self._writing = False
         result = self.results[self.step]
         result["state"] = "aborted" if aborted else "failed"
         self._took(result)
         self._log(("Stopped: " if aborted else "FAILED: ") + msg, "er")
-        untouched = not aborted and "Nothing was written" in msg
+        untouched = not aborted and not touched
         self._banner("error", ("✕ Stopped. " if aborted else "✕ Failed: " + msg + "  ")
-                     + ("" if untouched else "This radio may be partly written — do not power-cycle it "
-                                             "before deciding."))
+                     + ("Nothing reached the radio's flash: enter the update mode again and retry."
+                        if untouched else
+                        "This radio may be partly written — do not power-cycle it before deciding."))
         self.abort_btn.pack_forget()
         self.wctl.pack(fill="x", pady=(6, 0), before=self.log_lbl)
         self.ready_btn.configure(text="Retry — the radio is in this mode →", state="normal")
@@ -1657,7 +1732,8 @@ class RadioBoardsTab:
             return
         if not messagebox.askyesno(
                 "Stop writing NOW?",
-                "An interrupted write can leave this radio unbootable.\n\nStop anyway?"):
+                "An interrupted write can leave this radio unbootable.\n\nStop anyway?",
+                default=messagebox.NO):
             return
         self._abort.set()
 
@@ -1703,6 +1779,10 @@ class RadioBoardsTab:
             self._mcu_src = _load_step_source(photo) if photo else None
             self._mcu_img = self._mcu_natural
             self._mcu_label.configure(image=self._mcu_img if self._mcu_img else "")
+            if self._webcps_offered:
+                self.webcps_note.pack(anchor="w", fill="x", pady=(10, 0))
+            else:
+                self.webcps_note.pack_forget()
             self.mcu_box.pack(fill="x", pady=(4, 8), after=self.done_summary)
         else:
             self.mcu_box.pack_forget()

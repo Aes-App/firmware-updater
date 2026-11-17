@@ -32,7 +32,8 @@ Notes worth knowing before you use it:
   that will not start normally can be chosen by hand). The **D878 Series** button
   does the same for the D878UV (`D878UV`) and D878UVII (`D878UV2`).
 - **Radio and Boards Updates** offers prebuilt, checksum-verified versions from
-  AesApp by default; **My own files** compiles the vendor's update files instead.
+  AesApp by default, each with its changelog where one is published; **My own
+  files** compiles the vendor's update files instead.
 
 - **Digital Contact Refresh** takes either a list you uploaded to cps.aes.app or
   a register download of your own, which it turns into the radio's contact
@@ -55,8 +56,9 @@ Notes worth knowing before you use it:
 
 ```bash
 pip install -r bt_ota/requirements.txt        # bleak + pyserial
-# one-time: pull the auth lib out of an OTA APK you already have
-python -m bt_ota.extract_auth_lib "OTA V1.7.2.apk"
+# one-time: pull the auth lib out of JieLi's OTA SDK (jl_bt_ota_V1.9.2-release.aar,
+# from https://github.com/Jieli-Tech/Android-JL_OTA) or out of an OTA APK
+python -m bt_ota.extract_auth_lib jl_bt_ota_V1.9.2-release.aar
 
 python -m bt_ota gui                          # the app, all tabs
 python -m bt_ota scan                         # CLI: find a radio in pairing mode
@@ -138,7 +140,7 @@ bt_ota/                 Bluetooth-module tab, CLI and BLE protocol backends
   wiced.py              Cypress WICED OTA (D578/D878)
   client.py  gui.py     backend selector + the Tkinter window (builds the tabs)
   update_check.py       "is there a newer release?"
-  extract_auth_lib.py   one-time: pull libjl_ota_auth.so out of the OTA APK
+  extract_auth_lib.py   one-time: pull libjl_ota_auth.so out of the JieLi SDK's AAR (or an OTA APK)
   assets/               branding
 radio_fw/               Radio and Boards tab
   spec.py               the four targets: files, write order, entry combos

@@ -171,6 +171,12 @@ def test_the_d578uv_on_firmware_1xx():
     assert spec.model_label("d578uv") == "D578UV(III) G/Pro"
 
 
+def test_the_d890_is_named_with_its_btech_rebadge():
+    assert spec.model_label("d890") == "D890UV/BTECH-7X2"
+    assert spec.server_model_name("d890") == "D890UV/BTECH-7X2"
+    assert spec.PC_IDENT_MODEL["D890UV"] == "d890", "the radio still calls itself D890UV"
+
+
 def test_each_d578_button_names_the_radios_it_is_for():
     plus, rest = spec.covers("d578uv2"), spec.covers("d578uv")
     assert "AT-D578UV PLUS" in plus and "AT-D578UVIII PLUS" in plus and "2.xx" in plus

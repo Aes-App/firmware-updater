@@ -122,7 +122,7 @@ hiddenimports += ["bt_ota", "bt_ota.gui", "bt_ota.ota", "bt_ota.rcsp",
                   "bt_ota._jl_e1", "bt_ota._jl_itab"]
 # radio/boards firmware tab (lazily imported in bt_ota.gui.main) + its vendored
 # stdlib-only precompilers + pyserial's Windows port enumerator.
-hiddenimports += ["radio_fw", "radio_fw.gui_tab", "radio_fw.layout", "radio_fw.ports", "radio_fw.engines", "radio_fw.compiler",
+hiddenimports += ["radio_fw", "radio_fw.gui_tab", "radio_fw.layout", "radio_fw.ports", "radio_fw.changelog", "radio_fw.webcps", "radio_fw.engines", "radio_fw.compiler",
                   "radio_fw.spec", "radio_fw.download", "radio_fw.vendor",
                   "radio_fw.vendor.fwupd_cps", "radio_fw.vendor.fwupd_nr",
                   "radio_fw.vendor.fwupd_sct", "serial.tools.list_ports",

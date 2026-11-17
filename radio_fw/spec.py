@@ -152,7 +152,7 @@ _INSTR_ICON_D578 = (
 
 MODELS = {
     "d890": {
-        "label": "D890UV",
+        "label": "D890UV/BTECH-7X2",
         "cps_model": "d890",
         "order": [KIND_FW, KIND_ICON, KIND_SCT, KIND_NR],
         "instructions": {
@@ -304,7 +304,7 @@ SERVER_MODEL_TAG = {
     "d878uv2": "Gen 2",
 }
 SERVER_MODEL_NAME = {
-    "d890": "D890UV",
+    "d890": "D890UV/BTECH-7X2",
     "d878uv": "D878UV",
     "d878uv2": "D878UVII",
     "d168": "D168UV",

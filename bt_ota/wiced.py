@@ -124,7 +124,7 @@ class WicedOta:
 
     async def upgrade(self, fw: bytes,
                       progress_cb: Callable[[int, int], None] = _noop_progress,
-                      transfer_timeout: float = 600.0) -> None:
+                      transfer_timeout: float = 600.0) -> str:
         size = len(fw)
         if size == 0:
             raise WicedOtaError("firmware .bin is empty")
@@ -154,10 +154,16 @@ class WicedOta:
         try:
             st = await self._command(bytes([CMD_VERIFY]) + self._u32le(crc), timeout=30.0)
         except Exception as e:
+            if self.client is not None and self.client.is_connected:
+                raise WicedOtaError(
+                    f"no verify result from the module ({e}) while it stayed connected — "
+                    "not written as far as this tool can tell. Power-cycle the radio and run the "
+                    "update again.")
             self._log(f"verify: no status returned ({e})")
             self._log("module likely verified and rebooted to apply — CONFIRM the radio's "
                       "BT version to be sure (this is expected on macOS for this module)")
-            return
+            return "probable"
         if st != 0:
             raise WicedOtaError(f"verify failed: {STATUS.get(st, st)}")
         self._log("verify OK — module will reboot to apply the new BT firmware")
+        return "verified"

@@ -190,6 +190,7 @@ def write_codeplug(port_name: str,
     code = list(codeplug)
     cont = list(contacts)
     total = seg.block_count(code)
+    ctotal = seg.block_count(cont)
     if total == 0:
         raise CodeplugWriteError("the prepared codeplug is empty — nothing to write")
 
@@ -200,6 +201,7 @@ def write_codeplug(port_name: str,
     before = _port_names()
     link: Optional[SerialLink] = None
     committed = False
+    phase = "codeplug"
 
     try:
         on_progress(0, total, "handshake")
@@ -214,17 +216,17 @@ def write_codeplug(port_name: str,
         link.flush()
         clock.next("transfer")
         on_log(f"writing the codeplug: {total:,} blocks ({seg.describe(code)})", "ok")
-        res.retries += _write_all(link, code, total, on_progress, beat, "codeplug")
+        res.retries += _write_all(link, code, total, on_progress, beat, "codeplug", res, "blocks_written")
         res.blocks_written = total
         on_progress(total, total, "commit")
         beat.force("commit", total, total)
         ce._exit_program(link, on_log)
         committed = True
+        phase = "contacts" if cont else "verify"
         link.close()
         link = None
 
         if cont:
-            ctotal = seg.block_count(cont)
             clock.next("reboot")
             port_name = _wait_for_port(port_name, before, on_log, abort)
             clock.next("contacts")
@@ -232,10 +234,11 @@ def write_codeplug(port_name: str,
             ce._read_ident(link, on_log)
             link.flush()
             on_log(f"writing the digital contact list: {ctotal:,} blocks — this takes a while", "ok")
-            res.retries += _write_all(link, cont, ctotal, on_progress, beat, "contacts")
+            res.retries += _write_all(link, cont, ctotal, on_progress, beat, "contacts", res, "contact_blocks")
             res.contact_blocks = ctotal
             beat.force("contacts-commit", ctotal, ctotal)
             ce._exit_program(link, on_log)
+            phase = "verify"
             link.close()
             link = None
 
@@ -276,14 +279,11 @@ def write_codeplug(port_name: str,
 
     except AbortedError:
         res.outcome = "verify_unavailable" if committed else "write_failed"
-        res.message = ("Stopped by the operator after the codeplug was committed — the radio IS written "
-                       "but was not verified." if committed else
-                       "Stopped by the operator before anything was committed — the radio is unchanged.")
+        res.message = _interrupted("Stopped by the operator", phase, res, total, ctotal)
         return res
     except (FirmwareUpdateError, OSError) as e:
         res.outcome = "verify_unavailable" if committed else "write_failed"
-        res.message = (f"The codeplug was committed, then the link failed ({e}). Verify the radio "
-                       "before using it." if committed else f"The write failed before anything was committed ({e}).")
+        res.message = _interrupted(f"The write failed ({e})", phase, res, total, ctotal)
         return res
     finally:
         if link is not None:
@@ -331,18 +331,33 @@ class _Beat:
 
 
 def _write_all(link: SerialLink, segments, total: int, on_progress, beat: _Beat,
-               phase: str) -> int:
+               phase: str, res: WriteResult, field: str) -> int:
     retries = 0
     written = 0
     for addr, data in seg.iter_blocks(segments):
         link.check_abort()
+        written += 1
+        setattr(res, field, written)
         attempts = ce._write_block(link, addr, data, link.on_log)
         retries += attempts - 1
-        written += 1
         if (written % PROGRESS_EVERY_BLOCKS) == 0 or written == total:
             on_progress(written, total, phase)
             beat.maybe(phase, written, total)
     return retries
+
+
+def _interrupted(what: str, phase: str, res: WriteResult, total: int, ctotal: int) -> str:
+    if phase == "codeplug":
+        if res.blocks_written == 0:
+            return f"{what} before anything was written — the radio is unchanged."
+        return (f"{what} after {res.blocks_written:,} of {total:,} codeplug blocks. The radio now holds "
+                "a PARTIAL codeplug — do not use it until the codeplug has been written again in full.")
+    if phase == "contacts":
+        return (f"The codeplug was committed; then {what[0].lower() + what[1:]} during the digital "
+                f"contact list, after {res.contact_blocks:,} of {ctotal:,} blocks. The codeplug is "
+                "written but was not verified, and the contact list is incomplete — run Digital "
+                "Contact Refresh again.")
+    return f"{what} after the codeplug was committed — the radio IS written but was not verified."
 
 
 def _verify(link: SerialLink, segments, total: int, on_progress, beat: _Beat,

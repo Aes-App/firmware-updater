@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Iterable, Optional, Tuple
 
-from radio_fw.engines import AbortedError, FirmwareUpdateError, SerialLink
+from radio_fw.engines import AbortedError, FirmwareUpdateError, LinkDroppedError, SerialLink
 
 from . import segments as seg
 
@@ -162,11 +162,9 @@ def _write_block(link: SerialLink, addr: int, data: bytes, on_log) -> int:
                 break
             try:
                 b = link.read_exactly(1, remaining_ms)
-            except AbortedError:
+            except (AbortedError, LinkDroppedError):
                 raise
-            except FirmwareUpdateError as e:
-                if "serial read failed" in str(e):
-                    raise
+            except FirmwareUpdateError:
                 break
             if b[0] == ACK:
                 if attempt > 1:

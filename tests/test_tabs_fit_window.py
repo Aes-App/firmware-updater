@@ -34,10 +34,7 @@ def _window(height, width=980, server=True):
         pass
     if height is not None:
         root.geometry("%dx%d+20+20" % (width, height))
-    header = ttk.Frame(root)
-    header.pack(fill="x", padx=8, pady=6)
-    gui._brand_header(header, small=True).pack(side="left")
-    ttk.Separator(root).pack(fill="x", padx=8)
+    gui._build_header(root)
     nb = ttk.Notebook(root)
     nb.pack(fill="both", expand=True)
     page = ttk.Frame(nb)
@@ -202,10 +199,7 @@ def _contact_window(height, width=980):
     except tk.TclError:
         pass
     root.geometry("%dx%d+20+20" % (width, height))
-    header = ttk.Frame(root)
-    header.pack(fill="x", padx=8, pady=6)
-    gui._brand_header(header, small=True).pack(side="left")
-    ttk.Separator(root).pack(fill="x", padx=8)
+    gui._build_header(root)
     nb = ttk.Notebook(root)
     nb.pack(fill="both", expand=True)
     page = ttk.Frame(nb)

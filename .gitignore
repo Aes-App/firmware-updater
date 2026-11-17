@@ -18,9 +18,10 @@ build-linux-*/
 *.spec.bak
 bt_ota/assets/AesApp.iconset/
 
-# Native JieLi auth library — extracted from AnyTone's OTA APK for interop only,
-# not redistributed. Recreate it with:
-#   python -m bt_ota.extract_auth_lib "OTA V1.7.2.apk"
+# JieLi's auth library (Apache-2.0, see bt_ota/THIRD_PARTY_NOTICES.txt). It
+# ships inside every build but is kept out of git as a binary. Recreate it from
+# the SDK's AAR or from an OTA APK:
+#   python -m bt_ota.extract_auth_lib jl_bt_ota_V1.9.2-release.aar
 bt_ota/libjl_ota_auth.so
 
 # Windows cross-build scaffolding (Parallels VM helpers, logs, retrieved exes)

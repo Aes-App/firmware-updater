@@ -21,6 +21,12 @@ _MANIFEST = {"kind": "fw", "frames": 3, "payload_bytes": 400, "sha256": _SHA,
              "ident_reply_prefix_ascii": "ID878UV"}
 
 
+_WEBCPS = {"schema": 1, "radios": [{
+    "model": "anytone_d890", "fwupdModel": "d890", "name": "Anytone AT-D890UV",
+    "releases": [{"key": "1.05", "label": "1.05", "firmware": ["1.05"]},
+                 {"key": "1.04", "label": "1.04", "firmware": ["1.04"]}]}]}
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -47,6 +53,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, _ARTIFACT + b"\x00", "application/octet-stream")
         elif self.path == "/m":
             self._send(200, json.dumps(_MANIFEST).encode())
+        elif self.path.split("?", 1)[0] == "/api/firmware/webcps":
+            self._send(200, json.dumps(_WEBCPS).encode())
         else:
             self._send(404, b"nope", "text/plain")
 
@@ -97,6 +105,17 @@ def test_incomplete_catalog_entry_is_refused(server):
 def test_offline_gives_a_clear_error():
     with pytest.raises(download.DownloadError):
         download.fetch_catalog("http://127.0.0.1:59999", timeout=2)
+
+
+def test_the_firmware_webcps_supports_is_fetched(server):
+    assert download.fetch_webcps_firmware(server) == _WEBCPS
+
+
+def test_no_answer_on_the_firmware_webcps_supports_is_a_download_error(server):
+    with pytest.raises(download.DownloadError):
+        download.fetch_webcps_firmware("http://127.0.0.1:59999", timeout=2)
+    with pytest.raises(download.DownloadError):
+        download.fetch_webcps_firmware(server + "/older")
 
 
 def _serve(handler_cls):

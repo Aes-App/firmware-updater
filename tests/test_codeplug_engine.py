@@ -179,6 +179,66 @@ def test_a_radio_that_will_not_answer_reads_is_unverifiable_not_broken(monkeypat
     assert "committed" in res.message
 
 
+class _AbortAfter(_EchoDevice):
+
+    def __init__(self, *a, abort_after, abort, **kw):
+        super().__init__(*a, **kw)
+        self.abort_after = abort_after
+        self.abort = abort
+
+    def on_host_bytes(self, ser, data):
+        super().on_host_bytes(ser, data)
+        if len(self.blocks) >= self.abort_after:
+            self.abort.set()
+
+
+def test_a_stop_inside_the_codeplug_says_the_radio_is_partial_not_unchanged(monkeypatch):
+    abort = threading.Event()
+    dev = _AbortAfter(ident=IDENT_878, abort_after=2, abort=abort)
+    _install(monkeypatch, dev)
+    _, _, on_log, on_progress = _sink()
+
+    res = cpe.write_codeplug("COM_TEST", _plan((0x02500000, 4)), [],
+                             on_log=on_log, on_progress=on_progress, abort=abort)
+
+    assert res.outcome == "write_failed"
+    assert res.blocks_written == 2 == len(dev.blocks)
+    assert "PARTIAL codeplug" in res.message and "2 of 4" in res.message
+    assert "unchanged" not in res.message
+    assert dev.transcript.count("END") == 1
+    assert res.detail()["blocks"] == 2
+
+
+def test_a_stop_before_the_first_block_says_unchanged(monkeypatch):
+    dev = _EchoDevice(ident=IDENT_878)
+    _install(monkeypatch, dev)
+    _, _, on_log, on_progress = _sink()
+    abort = threading.Event()
+    abort.set()
+
+    res = cpe.write_codeplug("COM_TEST", _plan((0x02500000, 2)), [],
+                             on_log=on_log, on_progress=on_progress, abort=abort)
+
+    assert res.outcome == "write_failed"
+    assert dev.blocks == [] and "unchanged" in res.message
+
+
+def test_a_stop_inside_the_contact_list_says_the_list_is_incomplete(monkeypatch):
+    abort = threading.Event()
+    dev = _AbortAfter(ident=IDENT_878, abort_after=3, abort=abort)
+    _install(monkeypatch, dev)
+    _, _, on_log, on_progress = _sink()
+
+    res = cpe.write_codeplug("COM_TEST", _plan((0x02500000, 2)), _plan((0x04000000, 3)),
+                             on_log=on_log, on_progress=on_progress, abort=abort, verify=False)
+
+    assert res.outcome == "verify_unavailable", "the codeplug IS committed"
+    assert res.blocks_written == 2 and res.contact_blocks == 1
+    assert "contact list is incomplete" in res.message and "1 of 3" in res.message
+    assert "Digital Contact Refresh" in res.message
+    assert dev.transcript.count("END") == 2
+
+
 def test_the_wrong_radio_is_refused_before_anything_is_written(monkeypatch):
     dev = _EchoDevice(ident=b"ID890UV" + b"\x00" + b"\x0e" + b"V105" + b"\x00\x00" + b"\x06")
     _install(monkeypatch, dev)

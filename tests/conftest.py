@@ -13,3 +13,5 @@ def _no_firmware_catalog_from_the_network(monkeypatch):
         return
     monkeypatch.setattr(gui_tab.RadioBoardsTab, "_catalog_worker",
                         lambda self: self._post("catalog_err", "tests do not reach the AesApp server"))
+    monkeypatch.setattr(gui_tab.RadioBoardsTab, "_webcps_worker",
+                        lambda self: self._post("webcps", None))

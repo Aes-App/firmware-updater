@@ -10,7 +10,7 @@ import time
 import urllib.error
 import urllib.request
 from typing import Callable, Optional
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, urlparse
 
 from radio_fw import download as _dl
 
@@ -75,6 +75,31 @@ def cache_dir() -> str:
     return d
 
 
+class _BearerStaysHome(urllib.request.HTTPRedirectHandler):
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is None:
+            return None
+        old, nxt = urlparse(req.full_url), urlparse(new.full_url)
+        if old.scheme == "https" and nxt.scheme != "https":
+            raise urllib.error.URLError("redirect to an insecure address refused")
+        if (nxt.hostname or "").lower() != (old.hostname or "").lower() or nxt.port != old.port:
+            new.remove_header("Authorization")
+        return new
+
+
+def _open(req: urllib.request.Request, timeout: float):
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=_dl._ssl_context()), _BearerStaysHome())
+    return opener.open(req, timeout=timeout)
+
+
+def _same_host(url: str, base_url: str) -> bool:
+    a, b = urlparse(url), urlparse(base_url)
+    return (a.hostname or "").lower() == (b.hostname or "").lower() and a.port == b.port
+
+
 def _request(method: str, url: str, token: str, timeout: float,
              on_progress: Optional[Callable[[int, int], None]] = None,
              on_status: Optional[Callable[[str], None]] = None,
@@ -110,7 +135,7 @@ def _request_once(method: str, url: str, token: str, timeout: float,
         data = json.dumps(payload if payload is not None else {}).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=_dl._ssl_context()) as resp:
+        with _open(req, timeout) as resp:
             total = int(resp.headers.get("Content-Length") or 0)
             chunks, got = [], 0
             while True:
@@ -140,6 +165,8 @@ def _request_once(method: str, url: str, token: str, timeout: float,
         raise ContactsError(f"The server refused the request (HTTP {e.code}).")
     except urllib.error.URLError as e:
         reason = getattr(e, "reason", e)
+        if isinstance(reason, str) and "redirect" in reason:
+            raise ContactsError("The AesApp server redirected to an insecure address — refusing to follow it.")
         if isinstance(reason, (socket.timeout, TimeoutError)):
             raise ContactsError("The AesApp server took too long to respond. Check your connection and try again.")
         if isinstance(reason, ssl.SSLError):
@@ -230,6 +257,9 @@ def download_artifact(base_url: str, token: str, bundle: dict, timeout: float = 
             on_status("using the copy downloaded earlier (checksum verified)")
         return cached
     url = urljoin(base_url.rstrip("/") + "/", str(art_url).lstrip("/"))
+    if not _same_host(url, base_url):
+        raise ContactsError("The catalog points this list at another server — refusing to send your "
+                            "session there. Reload the list and try again.")
     status, body = _request("GET", url, token, timeout, on_progress, on_status)
     if status in (401, 403, 410):
         raise _auth_failure(status, body)

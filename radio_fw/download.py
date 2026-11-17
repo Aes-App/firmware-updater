@@ -17,6 +17,7 @@ from . import compiler
 
 DEFAULT_BASE_URL = os.environ.get("AESAPP_FW_BASE_URL", "https://cps.aes.app")
 _CATALOG_PATH = "/api/firmware/catalog"
+_WEBCPS_PATH = "/api/firmware/webcps"
 _UA_NAME = "AesApp-Radio-Updater"
 
 APP_VERSION = "dev"
@@ -163,6 +164,21 @@ def fetch_catalog(base_url: str = DEFAULT_BASE_URL, timeout: float = 15.0,
     if not isinstance(bundles, list):
         raise DownloadError("The server returned an unexpected catalog format.")
     return bundles
+
+
+def fetch_webcps_firmware(base_url: str = DEFAULT_BASE_URL, timeout: float = 10.0) -> dict:
+    url = urljoin(base_url + "/", _WEBCPS_PATH.lstrip("/")) + "?" + urlencode({"v": APP_VERSION})
+    try:
+        raw = _get_once(url, timeout, None)
+    except _Retryable as e:
+        raise DownloadError(e.message)
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise DownloadError("The server's list of WebCPS firmware was not valid data.")
+    if not isinstance(data, dict) or not isinstance(data.get("radios"), list):
+        raise DownloadError("The server returned an unexpected list of WebCPS firmware.")
+    return data
 
 
 def download_component(comp: dict, base_url: str = DEFAULT_BASE_URL,
