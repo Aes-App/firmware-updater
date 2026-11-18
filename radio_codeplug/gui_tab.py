@@ -48,6 +48,7 @@ class CodeplugWriteTab:
         self._busy = False
         self._writing = False
         self._abort: Optional[threading.Event] = None
+        self._operator_stop = False
         self._phase_start: Optional[tuple] = None
         self._build()
         self.root.after(80, self._drain)
@@ -100,10 +101,11 @@ class CodeplugWriteTab:
         elif kind == "ident":
             self.ident = payload
         elif kind == "write_done":
-            self._on_write_done(payload)
+            res, reported = payload
+            self._on_write_done(res, reported)
         elif kind == "write_err":
-            msg, aborted = payload
-            self._on_write_error(msg, aborted)
+            msg, aborted, reported = payload
+            self._on_write_error(msg, aborted, reported)
 
     def _eta(self, phase: str, done: int, total: int) -> Optional[float]:
         now = time.monotonic()
@@ -259,6 +261,9 @@ class CodeplugWriteTab:
             base, req.token, on_status=lambda m: self._post("status", (m, "#8a6d00")))
         self.job = self.plan = None
         self.link_var.set("")
+        self.progress["value"] = 0
+        self.wstatus.configure(text="", foreground="#444")
+        self._phase_start = None
         self._busy = True
         self._refresh_write_state()
         self.session_status.configure(text="Checking the link with the AesApp server…", foreground="#444")
@@ -307,6 +312,7 @@ class CodeplugWriteTab:
             return
         self._last_port = port
         self._writing = True
+        self._operator_stop = False
         self._phase_start = None
         self._abort = threading.Event()
         self.progress["value"] = 0
@@ -338,17 +344,17 @@ class CodeplugWriteTab:
                 abort=abort, ident_tokens=job.ident_tokens,
                 on_ident=lambda i: self._post("ident", i),
             )
-            sess.report(res.outcome, res.detail(), res.message)
-            self._post("write_done", res)
+            reported = sess.report(res.outcome, res.detail(), res.message)
+            self._post("write_done", (res, reported))
         except AbortedError as e:
-            sess.report(client.OUTCOME_WRITE_FAILED, {"client": "desktop", "aborted": True}, str(e))
-            self._post("write_err", (str(e), True))
+            reported = sess.report(client.OUTCOME_WRITE_FAILED, {"client": "desktop", "aborted": True}, str(e))
+            self._post("write_err", (str(e), True, reported))
         except (ce.ContactWriteError, OSError) as e:
-            sess.report(client.OUTCOME_WRITE_FAILED, {"client": "desktop"}, str(e))
-            self._post("write_err", (str(e), False))
+            reported = sess.report(client.OUTCOME_WRITE_FAILED, {"client": "desktop"}, str(e))
+            self._post("write_err", (str(e), False, reported))
         except Exception as e:
-            sess.report(client.OUTCOME_WRITE_FAILED, {"client": "desktop"}, str(e))
-            self._post("write_err", ("Unexpected error: " + str(e), False))
+            reported = sess.report(client.OUTCOME_WRITE_FAILED, {"client": "desktop"}, str(e))
+            self._post("write_err", ("Unexpected error: " + str(e), False, reported))
 
     def _on_abort(self):
         if not self._writing or self._abort is None:
@@ -360,32 +366,54 @@ class CodeplugWriteTab:
                 default=messagebox.NO):
             return
         if self._abort is not None:
+            self._operator_stop = True
             self._abort.set()
             self._log("stopping after the current block…", "er")
 
-    def _on_write_done(self, res: engine.WriteResult):
+    def _after_write(self, reported: bool):
+        self.plan = None
+        if reported:
+            self.session_status.configure(
+                text="The write has ended — your project is editable again on cps.aes.app. Start another "
+                     "write there if you need one.", foreground="#444")
+            return
+        minutes = max(1, round((self.job.lease_seconds if self.job else 600) / 60))
+        self._log("the server did not confirm how this write ended", "er")
+        self.session_status.configure(
+            text="The AesApp server did not confirm how this write ended, so cps.aes.app may keep your "
+                 f"project read-only for up to {minutes} minutes, until its lock runs out. Start another "
+                 "write there if you need one.", foreground="#8a6d00")
+
+    def _on_write_done(self, res: engine.WriteResult, reported: bool = True):
+        stopped = self._operator_stop
         self._writing = False
         self._abort = None
-        self.progress["value"] = 100 if res.outcome == "success" else self.progress["value"]
+        self._operator_stop = False
+        if res.outcome == "success":
+            self.progress["value"] = 100
+        elif stopped:
+            self.progress["value"] = 0
         colour = {"success": "#127a2e", "verify_unavailable": "#8a6d00"}.get(res.outcome, "#b00020")
         self.wstatus.configure(text=res.message, foreground=colour)
         self._log(res.message, {"success": "done", "verify_unavailable": "info"}.get(res.outcome, "er"))
-        self.plan = None
-        self.session_status.configure(
-            text="Done — your project is editable again on cps.aes.app. Start another write there if "
-                 "you need one.", foreground="#444")
+        self._after_write(reported)
         self._refresh_write_state()
+        if stopped:
+            return
         if res.outcome == "success":
             messagebox.showinfo("Codeplug written", res.message)
         else:
             messagebox.showwarning("Codeplug write finished with a warning", res.message)
 
-    def _on_write_error(self, msg: str, aborted: bool):
+    def _on_write_error(self, msg: str, aborted: bool, reported: bool = True):
         self._writing = False
         self._abort = None
+        self._operator_stop = False
+        if aborted:
+            self.progress["value"] = 0
         self.wstatus.configure(text=msg, foreground="#b00020")
         self._log(msg, "er")
-        self.plan = None
+        self._after_write(reported)
         self._refresh_write_state()
         if not aborted:
             messagebox.showerror("Codeplug write failed", msg)

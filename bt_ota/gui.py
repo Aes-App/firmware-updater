@@ -18,7 +18,7 @@ from radio_fw import uipump as _uipump
 APP_TITLE = "AesApp Radio Updater"
 VENDOR = "AesApp Inc."
 WEBSITE = "https://aes.app/"
-VERSION = "1.0.3"
+VERSION = "1.0.5"
 LOG_PREFIX = "[aesapp]"
 
 try:
